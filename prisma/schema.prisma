@@ -1,0 +1,111 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL")
+}
+
+enum DraftStatus {
+  NEW
+  IN_REVIEW
+  APPROVED
+  PUBLISHED
+}
+
+enum SessionMode {
+  IDLE
+  WAITING_ARTICLE
+  WAITING_NOTES
+}
+
+enum ModerationActionType {
+  APPROVE
+  REWRITE
+  REWRITE_NOTES
+}
+
+enum DraftSourceType {
+  SCHEDULED
+  MANUAL_UPLOAD
+}
+
+enum ContentPlanStatus {
+  IN_REVIEW
+  PUBLISHED
+}
+
+model ContentPlanItem {
+  id             String            @id @default(uuid())
+  sheetRowNumber Int               @unique
+  topic          String
+  rubric         String
+  status         ContentPlanStatus?
+  draftId        String?           @unique
+  draft          Draft?            @relation(fields: [draftId], references: [id])
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([status, sheetRowNumber])
+}
+
+model Draft {
+  id               String             @id @default(uuid())
+  sourceType       DraftSourceType
+  status           DraftStatus        @default(NEW)
+  currentText      String
+  contentPlanItem  ContentPlanItem?
+  revisions        DraftRevision[]
+  moderationEvents ModerationAction[]
+  pendingInSessions UserSession[]
+  publication      Publication?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([status, updatedAt])
+}
+
+model DraftRevision {
+  id         String   @id @default(uuid())
+  draftId    String
+  draft      Draft    @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  revisionNo Int
+  text       String
+  notes      String?
+  createdAt  DateTime @default(now())
+
+  @@unique([draftId, revisionNo])
+}
+
+model ModerationAction {
+  id         String               @id @default(uuid())
+  draftId    String
+  draft      Draft                @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  actionType ModerationActionType
+  actorId    String
+  notes      String?
+  createdAt  DateTime             @default(now())
+}
+
+model UserSession {
+  id           String      @id @default(uuid())
+  userId       String      @unique
+  mode         SessionMode @default(IDLE)
+  pendingDraftId String?
+  pendingDraft Draft?      @relation(fields: [pendingDraftId], references: [id], onDelete: SetNull)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([mode])
+}
+
+model Publication {
+  id                String   @id @default(uuid())
+  draftId           String   @unique
+  draft             Draft    @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  telegramChatId    String
+  telegramMessageId String
+  publishedAt       DateTime @default(now())
+}
