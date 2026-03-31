@@ -18,8 +18,29 @@ const envSchema = z.object({
   GOOGLE_SHEETS_WORKSHEET_TITLE: z.string().min(1).optional(),
   GOOGLE_SERVICE_ACCOUNT_EMAIL: z.string().email(),
   GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: z.string().min(1),
-  OPENAI_API_KEY: z.string().min(1),
-  OPENAI_MODEL: z.string().min(1).optional()
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  OPENAI_MODEL: z.string().min(1).optional(),
+  AI_PROXY_URL: z.string().url().optional(),
+  AI_PROXY_SECRET: z.string().min(1).optional()
+}).superRefine((data, ctx) => {
+  if (data.AI_PROXY_URL) {
+    if (!data.AI_PROXY_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AI_PROXY_SECRET'],
+        message: 'AI_PROXY_SECRET is required when AI_PROXY_URL is set.'
+      });
+    }
+    return;
+  }
+
+  if (!data.OPENAI_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['OPENAI_API_KEY'],
+      message: 'OPENAI_API_KEY is required when AI_PROXY_URL is not set.'
+    });
+  }
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

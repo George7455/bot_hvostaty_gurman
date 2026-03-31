@@ -1543,3 +1543,19 @@ User requested removal/prevention of secret exposure outside `.env`; repository 
 
 Impact:
 Prevents future secret leakage via commits and keeps runtime/generated files out of version control.
+
+## Update 103 — 2026-03-31
+
+File: src/config/env.ts, src/modules/ai/index.ts, .env.example  
+Lines: `src/config/env.ts` (10-44), `src/modules/ai/index.ts` (1-84), `.env.example` (15-18)
+
+Change:
+- Added AI proxy environment variables (`AI_PROXY_URL`, `AI_PROXY_SECRET`) and validation rules that require proxy secret when proxy URL is set, otherwise enforce direct OpenAI key.
+- Implemented `ProxyAiService` that signs requests with HMAC and calls the EU AI proxy endpoint.
+- Updated AI module factory to choose proxy when configured and documented proxy envs in `.env.example`.
+
+Reason:
+Direct OpenAI calls from the current region are blocked; routing the AI request through an EU microservice is required to restore functionality.
+
+Impact:
+AI generation can be served via the EU proxy while keeping the rest of the backend unchanged; configuration remains explicit and validated.
