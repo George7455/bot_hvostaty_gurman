@@ -1559,3 +1559,19 @@ Direct OpenAI calls from the current region are blocked; routing the AI request 
 
 Impact:
 AI generation can be served via the EU proxy while keeping the rest of the backend unchanged; configuration remains explicit and validated.
+
+## Update 104 — 2026-03-31
+
+File: src/modules/planner/index.ts, src/modules/telegram/index.ts, src/main.ts  
+Lines: `src/modules/planner/index.ts` (76-97), `src/modules/telegram/index.ts` (3-214), `src/main.ts` (21-54)
+
+Change:
+- Added planner tick logging to surface scheduler activity in runtime logs.
+- Added `/tick` Telegram command to trigger a manual planning tick on demand.
+- Bound planner module into Telegram service wiring for the new command.
+
+Reason:
+We need a manual trigger and visibility to diagnose schedule execution when no automated tick is observed.
+
+Impact:
+Operators can validate scheduling immediately and debug state issues without waiting for the next scheduled window.

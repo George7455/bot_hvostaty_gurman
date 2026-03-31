@@ -74,9 +74,14 @@ export class PlannerService implements PlannerModule {
   }
 
   private async handleScheduleTick(): Promise<void> {
-    await this.ensureStateLoaded();
-
     const currentTime = getMoscowTimeParts();
+    console.log(
+      `Planner tick ${currentTime.date} ${String(currentTime.hour).padStart(2, '0')}:${String(
+        currentTime.minute
+      ).padStart(2, '0')} MSK`
+    );
+
+    await this.ensureStateLoaded();
     if (currentTime.minute >= SCHEDULE_MINUTE_WINDOW || !PLANNED_HOURS.has(currentTime.hour)) {
       return;
     }

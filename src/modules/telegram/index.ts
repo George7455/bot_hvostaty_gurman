@@ -2,9 +2,10 @@ import { Context, Telegraf } from 'telegraf';
 
 import type { AppEnv } from '../../config/index.js';
 import type { ModerationModule } from '../moderation/index.js';
+import type { ModerationDeliveryPort } from '../moderation/index.js';
+import type { PlannerModule } from '../planner/index.js';
 import type { PublishingTransport } from '../publishing/index.js';
 import type { SessionsModule } from '../sessions/index.js';
-import type { ModerationDeliveryPort } from '../moderation/index.js';
 
 const UPLOAD_COMMAND = 'upload';
 const CANCEL_TEXT = 'cancel';
@@ -18,6 +19,8 @@ export class TelegramService implements TelegramModule {
   private readonly bot: Telegraf;
   private readonly moderatorChatIds: string[];
   private readonly channelId: string;
+  private moderationModule: ModerationModule | null = null;
+  private plannerModule: PlannerModule | null = null;
 
   public constructor(
     env: AppEnv,
@@ -30,10 +33,12 @@ export class TelegramService implements TelegramModule {
     this.registerHandlers();
   }
 
-  private moderationModule: ModerationModule | null = null;
-
   public bindModerationModule(moderationModule: ModerationModule): void {
     this.moderationModule = moderationModule;
+  }
+
+  public bindPlannerModule(plannerModule: PlannerModule): void {
+    this.plannerModule = plannerModule;
   }
 
   public async start(): Promise<void> {
@@ -84,6 +89,21 @@ export class TelegramService implements TelegramModule {
         await ctx.reply('Send the article text in one message. Send "cancel" to abort.');
       } catch (error: unknown) {
         await safeReply(ctx, `Failed to handle /upload: ${toErrorMessage(error)}`);
+      }
+    });
+
+    this.bot.command('tick', async (ctx) => {
+      try {
+        if (!this.plannerModule) {
+          await ctx.reply('Планировщик не инициализирован.');
+          return;
+        }
+
+        await ctx.reply('Запускаю ручной тик...');
+        await this.plannerModule.runScheduledPlanningTick();
+        await ctx.reply('Ручной тик выполнен.');
+      } catch (error: unknown) {
+        await safeReply(ctx, `Ручной тик завершился с ошибкой: ${toErrorMessage(error)}`);
       }
     });
 

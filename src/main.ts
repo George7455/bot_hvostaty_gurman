@@ -40,6 +40,7 @@ async function bootstrap(): Promise<void> {
   );
   telegramModule.bindModerationModule(moderationModule);
   const plannerModule = new PlannerService(sheetsModule, draftsModule, moderationModule);
+  telegramModule.bindPlannerModule(plannerModule);
 
   const app = buildApp();
   app.addHook('onClose', async () => {
