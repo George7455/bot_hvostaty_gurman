@@ -13,6 +13,7 @@ import { createRepositories } from './repositories/index.js';
 import { buildApp } from './app.js';
 
 async function bootstrap(): Promise<void> {
+  console.log('App bootstrap starting');
   const env = readEnv();
   const database = createDatabaseModule();
   await database.connect();
@@ -50,12 +51,15 @@ async function bootstrap(): Promise<void> {
   });
 
   await telegramModule.start();
+  console.log('Telegram bot started');
   plannerModule.start();
+  console.log('Planner started');
 
   await app.listen({
     host: '0.0.0.0',
     port: env.PORT
   });
+  console.log(`HTTP server listening on port ${env.PORT}`);
 }
 
 bootstrap().catch((error: unknown) => {

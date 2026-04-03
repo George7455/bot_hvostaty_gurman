@@ -65,3 +65,4 @@
 [✗] Step 65 — Deployment request received, but scope in `CODEX.md` does not mention deployment; clarification required before proceeding.
 [✓] Step 66 — Added AI proxy env support and HMAC-signed proxy AI service to route OpenAI calls through EU microservice.
 [✓] Step 67 — Added scheduler tick logging and /tick Telegram command to manually trigger planning flow for diagnostics.
+[✓] Step 68 — Added explicit bootstrap logs to verify planner start and stdout visibility under PM2.

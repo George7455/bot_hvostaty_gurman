@@ -1575,3 +1575,17 @@ We need a manual trigger and visibility to diagnose schedule execution when no a
 
 Impact:
 Operators can validate scheduling immediately and debug state issues without waiting for the next scheduled window.
+
+## Update 105 — 2026-04-03
+
+File: src/main.ts  
+Lines: `src/main.ts` (15-58)
+
+Change:
+Added explicit startup logs for app bootstrap, Telegram bot start, planner start, and HTTP server listening.
+
+Reason:
+We need clear runtime signals that the main process reaches planner start and that stdout logging is functioning under PM2.
+
+Impact:
+Improves observability of startup path and helps diagnose why scheduler logs are missing.
