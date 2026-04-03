@@ -1603,3 +1603,17 @@ We need to identify whether startup is hanging before the planner starts (DB con
 
 Impact:
 Makes the exact startup stall point visible in PM2 logs.
+
+## Update 107 — 2026-04-03
+
+File: src/main.ts  
+Lines: `src/main.ts` (33-73)
+
+Change:
+Wrapped Telegram bot startup in a 15s timeout and allowed the planner to start even if Telegram startup hangs.
+
+Reason:
+Scheduler never started because the process blocked on Telegram startup; we need scheduling to proceed while troubleshooting Telegram connectivity.
+
+Impact:
+Planner now runs on schedule even if Telegram launch stalls; logs explicitly note the timeout.

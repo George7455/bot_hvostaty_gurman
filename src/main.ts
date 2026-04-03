@@ -54,8 +54,12 @@ async function bootstrap(): Promise<void> {
   });
 
   console.log('Starting Telegram bot');
-  await telegramModule.start();
-  console.log('Telegram bot started');
+  const telegramStarted = await withTimeout(telegramModule.start(), 15_000);
+  if (telegramStarted) {
+    console.log('Telegram bot started');
+  } else {
+    console.warn('Telegram bot start timed out; continuing without confirmed startup.');
+  }
   plannerModule.start();
   console.log('Planner started');
 
@@ -70,3 +74,20 @@ bootstrap().catch((error: unknown) => {
   console.error('Failed to start application', error);
   process.exit(1);
 });
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<boolean> {
+  let timeoutHandle: NodeJS.Timeout | null = null;
+  try {
+    const result = await Promise.race([
+      promise.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timeoutHandle = setTimeout(() => resolve(false), timeoutMs);
+      })
+    ]);
+    return result === true;
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
