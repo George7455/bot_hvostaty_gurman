@@ -15,8 +15,11 @@ import { buildApp } from './app.js';
 async function bootstrap(): Promise<void> {
   console.log('App bootstrap starting');
   const env = readEnv();
+  console.log('Environment loaded');
   const database = createDatabaseModule();
+  console.log('Connecting to database');
   await database.connect();
+  console.log('Database connected');
   const repositories = createRepositories(database.client);
 
   const aiModule = createAiModuleFromEnv(env);
@@ -50,6 +53,7 @@ async function bootstrap(): Promise<void> {
     await database.disconnect();
   });
 
+  console.log('Starting Telegram bot');
   await telegramModule.start();
   console.log('Telegram bot started');
   plannerModule.start();

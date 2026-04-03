@@ -1589,3 +1589,17 @@ We need clear runtime signals that the main process reaches planner start and th
 
 Impact:
 Improves observability of startup path and helps diagnose why scheduler logs are missing.
+
+## Update 106 — 2026-04-03
+
+File: src/main.ts  
+Lines: `src/main.ts` (15-58)
+
+Change:
+Added granular startup logs around env load, database connect, and Telegram bot launch.
+
+Reason:
+We need to identify whether startup is hanging before the planner starts (DB connect or bot launch).
+
+Impact:
+Makes the exact startup stall point visible in PM2 logs.

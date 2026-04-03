@@ -66,3 +66,4 @@
 [✓] Step 66 — Added AI proxy env support and HMAC-signed proxy AI service to route OpenAI calls through EU microservice.
 [✓] Step 67 — Added scheduler tick logging and /tick Telegram command to manually trigger planning flow for diagnostics.
 [✓] Step 68 — Added explicit bootstrap logs to verify planner start and stdout visibility under PM2.
+[✓] Step 69 — Added granular startup logs to pinpoint DB or Telegram launch stalls before scheduler start.
