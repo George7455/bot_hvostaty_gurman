@@ -1688,3 +1688,61 @@ Telegram output was collapsing into a single block; the prompt needed an explici
 
 Impact:
 Model guidance now reinforces single line breaks between paragraphs without empty lines.
+
+## Update 113 — 2026-04-11
+
+File: src/modules/planner/index.ts  
+Lines: `src/modules/planner/index.ts` (8-12)
+
+Change:
+Adjusted scheduled planner hours to run at 09:00 and 17:00 Moscow time only.
+
+Reason:
+User requested two daily runs at 09:00 and 17:00 MSK instead of three.
+
+Impact:
+Automatic draft generation now triggers twice per day at the new times.
+
+## Update 114 — 2026-04-11
+
+File: src/modules/telegram/index.ts, package.json, package-lock.json  
+Lines: `src/modules/telegram/index.ts` (1-260), `package.json` (dependencies), `package-lock.json` (pdf-parse)
+
+Change:
+- Added PDF upload handling for `/upload`, including file download, size limit, and text extraction via `pdf-parse`.
+- Added `pdf-parse` runtime dependency and TypeScript types.
+- Updated `/upload` prompt to accept PDF files.
+
+Reason:
+User requested support for uploading a PDF and rewriting its contents via the existing prompt flow.
+
+Impact:
+Manual uploads now accept PDF files and convert them into draft text for moderation.
+
+## Update 115 — 2026-04-11
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (206-330)
+
+Change:
+Replaced the /upload (manual adaptation) prompt with the provided editorial system prompt for adapting source texts and PDFs into Telegram posts.
+
+Reason:
+User requested a dedicated /upload prompt that preserves all important details from the source text while adapting for Telegram format.
+
+Impact:
+Manual uploads now use the specified adaptation rules and structure.
+
+## Update 116 — 2026-04-11
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (11-120)
+
+Change:
+Raised PDF upload size limit from 5 MB to 25 MB.
+
+Reason:
+User requested larger PDFs for /upload.
+
+Impact:
+Manual uploads can now accept larger PDF files.

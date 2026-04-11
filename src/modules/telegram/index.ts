@@ -1,4 +1,5 @@
 import { Context, Telegraf } from 'telegraf';
+import pdfParse from 'pdf-parse';
 
 import type { AppEnv } from '../../config/index.js';
 import type { ModerationModule } from '../moderation/index.js';
@@ -9,6 +10,7 @@ import type { SessionsModule } from '../sessions/index.js';
 
 const UPLOAD_COMMAND = 'upload';
 const CANCEL_TEXT = 'cancel';
+const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
 export interface TelegramModule extends ModerationDeliveryPort, PublishingTransport {
   start(): Promise<void>;
@@ -86,7 +88,7 @@ export class TelegramService implements TelegramModule {
         }
 
         await this.sessionsModule.setWaitingArticle(userId);
-        await ctx.reply('Send the article text in one message. Send "cancel" to abort.');
+        await ctx.reply('Send the article text in one message or upload a PDF file. Send "cancel" to abort.');
       } catch (error: unknown) {
         await safeReply(ctx, `Failed to handle /upload: ${toErrorMessage(error)}`);
       }
@@ -109,6 +111,10 @@ export class TelegramService implements TelegramModule {
 
     this.bot.on('callback_query', async (ctx) => {
       await this.handleCallbackQuery(ctx);
+    });
+
+    this.bot.on('document', async (ctx) => {
+      await this.handleDocumentMessage(ctx);
     });
 
     this.bot.on('text', async (ctx) => {
@@ -212,6 +218,71 @@ export class TelegramService implements TelegramModule {
       await safeReply(ctx, `Failed to process message: ${toErrorMessage(error)}`);
     }
   }
+
+  private async handleDocumentMessage(ctx: Context): Promise<void> {
+    try {
+      const userId = String(ctx.from?.id ?? '');
+      if (!userId) {
+        return;
+      }
+
+      const session = await this.sessionsModule.getSession(userId);
+      if (session.mode !== 'WAITING_ARTICLE') {
+        return;
+      }
+
+      if (!this.moderationModule) {
+        throw new Error('Moderation module is not bound.');
+      }
+
+      const message = (ctx.message ?? {}) as { document?: unknown };
+      const document = (message.document ?? {}) as {
+        file_id?: unknown;
+        file_name?: unknown;
+        mime_type?: unknown;
+        file_size?: unknown;
+      };
+
+      const fileId = typeof document.file_id === 'string' ? document.file_id : '';
+      if (!fileId) {
+        await ctx.reply('Failed to read uploaded file.');
+        return;
+      }
+
+      const mimeType = typeof document.mime_type === 'string' ? document.mime_type : '';
+      const fileName = typeof document.file_name === 'string' ? document.file_name : '';
+      if (!isPdfDocument(mimeType, fileName)) {
+        await ctx.reply('Please upload a PDF file.');
+        return;
+      }
+
+      const fileSize = typeof document.file_size === 'number' ? document.file_size : null;
+      if (fileSize !== null && fileSize > MAX_PDF_BYTES) {
+        await ctx.reply('PDF file is слишком большой. Максимум 5 МБ.');
+        return;
+      }
+
+      const fileUrl = await this.bot.telegram.getFileLink(fileId);
+      const response = await fetch(fileUrl.toString());
+      if (!response.ok) {
+        throw new Error(`Failed to download PDF: ${response.status}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const parsed = await pdfParse(buffer);
+      const articleText = parsed.text?.trim() ?? '';
+      if (articleText.length === 0) {
+        await ctx.reply('PDF не содержит читаемого текста.');
+        return;
+      }
+
+      const draftId = await this.moderationModule.processManualUploadArticle(userId, articleText);
+      await ctx.reply(`PDF принят. Черновик ${draftId} отправлен на модерацию.`);
+    } catch (error: unknown) {
+      await safeReply(ctx, `Failed to process PDF: ${toErrorMessage(error)}`);
+    }
+  }
 }
 
 function parseModeratorChats(rawValue: string): string[] {
@@ -227,6 +298,14 @@ function toErrorMessage(error: unknown): string {
   }
 
   return String(error);
+}
+
+function isPdfDocument(mimeType: string, fileName: string): boolean {
+  if (mimeType.toLowerCase() === 'application/pdf') {
+    return true;
+  }
+
+  return fileName.toLowerCase().endsWith('.pdf');
 }
 
 async function safeAnswerCbQuery(ctx: Context, text: string): Promise<void> {

@@ -73,3 +73,7 @@
 [✓] Step 73 — Replaced the main prompt with the stronger copywriter spec and embedded example outputs.
 [✓] Step 74 — Tightened prompt constraints and normalized output to remove blank lines between paragraphs.
 [✓] Step 75 — Added explicit “new line per paragraph” guidance to prevent single-block output in Telegram.
+[✓] Step 76 — Updated planner schedule to 09:00 and 17:00 Moscow time.
+[✓] Step 77 — Added PDF upload support for /upload with pdf-parse extraction.
+[✓] Step 78 — Replaced /upload prompt with the provided adaptation system prompt.
+[✓] Step 79 — Increased PDF upload size limit to 25 MB.
