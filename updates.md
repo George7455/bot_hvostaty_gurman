@@ -1617,3 +1617,45 @@ Scheduler never started because the process blocked on Telegram startup; we need
 
 Impact:
 Planner now runs on schedule even if Telegram launch stalls; logs explicitly note the timeout.
+
+## Update 108 — 2026-04-10
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (48-197)
+
+Change:
+Replaced the initial-draft prompt with the provided Telegram dog-niche prompt template and mapped known inputs (topic, rubric) while leaving other fields as "не указана/нет".
+
+Reason:
+User requested a new primary prompt specification for initial draft generation.
+
+Impact:
+Generated drafts now follow the updated style and rule set for the channel.
+
+## Update 109 — 2026-04-10
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (62-120)
+
+Change:
+Refined the main prompt to align with the latest user-specified rules, including explicit “no blank lines between paragraphs” instruction.
+
+Reason:
+User provided an updated prompt specification and requested replacement.
+
+Impact:
+Initial draft generation now follows the revised formatting and constraint rules.
+
+## Update 110 — 2026-04-11
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (48-246)
+
+Change:
+Replaced the main prompt with the latest “strong Telegram copywriter” specification and appended the provided example outputs to the prompt.
+
+Reason:
+User requested another replacement of the primary prompt and asked to embed example texts as output references.
+
+Impact:
+Initial draft generation now follows the newest style rubric and has explicit exemplar guidance.

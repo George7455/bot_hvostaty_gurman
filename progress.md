@@ -68,3 +68,6 @@
 [✓] Step 68 — Added explicit bootstrap logs to verify planner start and stdout visibility under PM2.
 [✓] Step 69 — Added granular startup logs to pinpoint DB or Telegram launch stalls before scheduler start.
 [✓] Step 70 — Added Telegram startup timeout so scheduler can run even if bot launch hangs.
+[✓] Step 71 — Replaced initial draft prompt with provided dog-niche Telegram prompt template.
+[✓] Step 72 — Updated the main prompt with the latest user-specified formatting and constraint rules.
+[✓] Step 73 — Replaced the main prompt with the stronger copywriter spec and embedded example outputs.
