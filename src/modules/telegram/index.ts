@@ -1,5 +1,4 @@
 import { Context, Telegraf } from 'telegraf';
-import * as pdfParse from 'pdf-parse';
 
 import type { AppEnv } from '../../config/index.js';
 import type { ModerationModule } from '../moderation/index.js';
@@ -23,6 +22,7 @@ export class TelegramService implements TelegramModule {
   private readonly channelId: string;
   private moderationModule: ModerationModule | null = null;
   private plannerModule: PlannerModule | null = null;
+  private pdfParserPromise: Promise<(data: Buffer) => Promise<{ text?: string }>> | null = null;
 
   public constructor(
     env: AppEnv,
@@ -270,9 +270,7 @@ export class TelegramService implements TelegramModule {
 
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-      const parser =
-        (pdfParse as unknown as { default?: (data: Buffer) => Promise<{ text?: string }> }).default ??
-        (pdfParse as unknown as (data: Buffer) => Promise<{ text?: string }>);
+      const parser = await this.getPdfParser();
       const parsed = await parser(buffer);
       const articleText = parsed.text?.trim() ?? '';
       if (articleText.length === 0) {
@@ -285,6 +283,14 @@ export class TelegramService implements TelegramModule {
     } catch (error: unknown) {
       await safeReply(ctx, `Failed to process PDF: ${toErrorMessage(error)}`);
     }
+  }
+
+  private async getPdfParser(): Promise<(data: Buffer) => Promise<{ text?: string }>> {
+    if (!this.pdfParserPromise) {
+      this.pdfParserPromise = loadPdfParser();
+    }
+
+    return this.pdfParserPromise;
   }
 }
 
@@ -328,4 +334,35 @@ async function safeReply(ctx: Context, text: string): Promise<void> {
       error
     });
   }
+}
+
+async function loadPdfParser(): Promise<(data: Buffer) => Promise<{ text?: string }>> {
+  const moduleValue = await import('pdf-parse');
+  const unwrapped = unwrapDefaultExport(moduleValue);
+
+  if (typeof unwrapped === 'function') {
+    return unwrapped as (data: Buffer) => Promise<{ text?: string }>;
+  }
+
+  throw new Error('Failed to initialize PDF parser.');
+}
+
+function unwrapDefaultExport(value: unknown): unknown {
+  let current = value;
+
+  // CommonJS interop can wrap default export more than once.
+  for (let i = 0; i < 3; i += 1) {
+    if (!current || typeof current !== 'object' || !('default' in current)) {
+      break;
+    }
+
+    const next = (current as { default: unknown }).default;
+    if (next === undefined) {
+      break;
+    }
+
+    current = next;
+  }
+
+  return current;
 }

@@ -85,3 +85,6 @@
 [✗] Step 85 — Awaiting instruction on how to proceed with existing unstaged changes before verification.
 [✓] Step 86 — Reviewed diff stats to scope changes for GitHub publish request.
 [✗] Step 87 — GitHub CLI missing; publish flow blocked pending gh installation and auth.
+[✓] Step 88 — Reproduced /upload PDF runtime failure context and isolated `import.meta` incompatibility in Telegram module.
+[✓] Step 89 — Replaced PDF parser loading with interop-safe dynamic import + default-export unwrap helper.
+[✓] Step 90 — Re-validated compile integrity after fix (`npm run build`, `npm run typecheck` passed).

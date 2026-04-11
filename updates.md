@@ -1816,3 +1816,35 @@ AGENTS.md requires execution steps and explicit blockers to be traceable.
 
 Impact:
 Publication flow is paused until gh is installed and authenticated.
+
+## Update 122 — 2026-04-11
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (1-380)
+
+Change:
+Removed `createRequire(import.meta.url)` usage and introduced cached PDF parser loader:
+- added `pdfParserPromise` cache on `TelegramService`,
+- added `getPdfParser()` method,
+- added `loadPdfParser()` with dynamic import,
+- added `unwrapDefaultExport()` to normalize CommonJS/ESM default nesting before invocation.
+
+Reason:
+Build/runtime mismatch: `import.meta` is rejected in CommonJS output and prior module shape caused `parser is not a function`.
+
+Impact:
+`/upload` PDF parsing now resolves parser function robustly across interop modes and no longer depends on `import.meta`.
+
+## Update 123 — 2026-04-11
+
+File: progress.md  
+Lines: 88–90  
+
+Change:
+Logged issue isolation, Telegram module parser-loader fix, and post-fix verification results.
+
+Reason:
+Maintain mandatory traceability for each meaningful execution step.
+
+Impact:
+Execution log reflects the current fix and successful local validation.
