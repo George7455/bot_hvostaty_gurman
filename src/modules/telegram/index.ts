@@ -22,7 +22,7 @@ export class TelegramService implements TelegramModule {
   private readonly channelId: string;
   private moderationModule: ModerationModule | null = null;
   private plannerModule: PlannerModule | null = null;
-  private pdfParserPromise: Promise<(data: Buffer) => Promise<{ text?: string }>> | null = null;
+  private pdfParseClassPromise: Promise<PdfParseConstructor> | null = null;
 
   public constructor(
     env: AppEnv,
@@ -258,7 +258,7 @@ export class TelegramService implements TelegramModule {
 
       const fileSize = typeof document.file_size === 'number' ? document.file_size : null;
       if (fileSize !== null && fileSize > MAX_PDF_BYTES) {
-        await ctx.reply('PDF file is слишком большой. Максимум 5 МБ.');
+        await ctx.reply('PDF file is слишком большой. Максимум 25 МБ.');
         return;
       }
 
@@ -270,8 +270,14 @@ export class TelegramService implements TelegramModule {
 
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-      const parser = await this.getPdfParser();
-      const parsed = await parser(buffer);
+      const PdfParse = await this.getPdfParseClass();
+      const parser = new PdfParse({ data: buffer });
+      let parsed: { text?: string };
+      try {
+        parsed = await parser.getText();
+      } finally {
+        await parser.destroy();
+      }
       const articleText = parsed.text?.trim() ?? '';
       if (articleText.length === 0) {
         await ctx.reply('PDF не содержит читаемого текста.');
@@ -285,12 +291,12 @@ export class TelegramService implements TelegramModule {
     }
   }
 
-  private async getPdfParser(): Promise<(data: Buffer) => Promise<{ text?: string }>> {
-    if (!this.pdfParserPromise) {
-      this.pdfParserPromise = loadPdfParser();
+  private async getPdfParseClass(): Promise<PdfParseConstructor> {
+    if (!this.pdfParseClassPromise) {
+      this.pdfParseClassPromise = loadPdfParseClass();
     }
 
-    return this.pdfParserPromise;
+    return this.pdfParseClassPromise;
   }
 }
 
@@ -336,22 +342,38 @@ async function safeReply(ctx: Context, text: string): Promise<void> {
   }
 }
 
-async function loadPdfParser(): Promise<(data: Buffer) => Promise<{ text?: string }>> {
-  const moduleValue = await import('pdf-parse');
-  const unwrapped = unwrapDefaultExport(moduleValue);
+interface PdfParseInstance {
+  getText(): Promise<{ text?: string }>;
+  destroy(): Promise<void>;
+}
 
-  if (typeof unwrapped === 'function') {
-    return unwrapped as (data: Buffer) => Promise<{ text?: string }>;
+interface PdfParseConstructor {
+  new (options: { data: Buffer }): PdfParseInstance;
+}
+
+async function loadPdfParseClass(): Promise<PdfParseConstructor> {
+  const moduleValue = await import('pdf-parse');
+  const classCandidate = unwrapPdfParseClass(moduleValue);
+
+  if (typeof classCandidate === 'function') {
+    return classCandidate as PdfParseConstructor;
   }
 
   throw new Error('Failed to initialize PDF parser.');
 }
 
-function unwrapDefaultExport(value: unknown): unknown {
+function unwrapPdfParseClass(value: unknown): unknown {
   let current = value;
 
-  // CommonJS interop can wrap default export more than once.
+  // CommonJS interop can wrap exports more than once.
   for (let i = 0; i < 3; i += 1) {
+    if (current && typeof current === 'object' && 'PDFParse' in current) {
+      const candidate = (current as { PDFParse: unknown }).PDFParse;
+      if (typeof candidate === 'function') {
+        return candidate;
+      }
+    }
+
     if (!current || typeof current !== 'object' || !('default' in current)) {
       break;
     }
@@ -364,5 +386,9 @@ function unwrapDefaultExport(value: unknown): unknown {
     current = next;
   }
 
-  return current;
+  if (current && typeof current === 'object' && 'PDFParse' in current) {
+    return (current as { PDFParse: unknown }).PDFParse;
+  }
+
+  return null;
 }

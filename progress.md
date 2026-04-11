@@ -88,3 +88,6 @@
 [✓] Step 88 — Reproduced /upload PDF runtime failure context and isolated `import.meta` incompatibility in Telegram module.
 [✓] Step 89 — Replaced PDF parser loading with interop-safe dynamic import + default-export unwrap helper.
 [✓] Step 90 — Re-validated compile integrity after fix (`npm run build`, `npm run typecheck` passed).
+[✓] Step 91 — Verified installed `pdf-parse` API is v2 class export (`PDFParse`) and not callable function.
+[✓] Step 92 — Updated PDF extraction flow to v2 API (`new PDFParse({ data }).getText()` + `destroy()`).
+[✓] Step 93 — Re-validated compile integrity after v2 parser migration (`npm run build`, `npm run typecheck` passed).

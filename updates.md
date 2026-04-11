@@ -1848,3 +1848,35 @@ Maintain mandatory traceability for each meaningful execution step.
 
 Impact:
 Execution log reflects the current fix and successful local validation.
+
+## Update 124 — 2026-04-11
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (1-420)
+
+Change:
+Migrated PDF parsing from function-style invocation to `pdf-parse` v2 class API:
+- replaced cached parser-function loader with cached `PDFParse` class loader,
+- resolved class export via interop-safe `PDFParse` lookup across nested default wrappers,
+- switched PDF extraction path to `new PDFParse({ data: buffer })` + `getText()` + `destroy()`,
+- corrected upload size-limit message from `5 МБ` to `25 МБ` to match runtime limit constant.
+
+Reason:
+Runtime still failed with “Failed to initialize PDF parser” because installed `pdf-parse` package exposes `PDFParse` class (v2 API), not callable parser function.
+
+Impact:
+`/upload` PDF path now matches the installed dependency API and should parse text without function-shape errors.
+
+## Update 125 — 2026-04-11
+
+File: progress.md  
+Lines: 91–93  
+
+Change:
+Logged `pdf-parse` API verification, v2 parser migration, and post-migration build/typecheck success.
+
+Reason:
+Maintain mandatory technical traceability for each meaningful fix iteration.
+
+Impact:
+Execution log now reflects current parser API compatibility fix and validation.
