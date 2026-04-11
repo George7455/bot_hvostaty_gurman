@@ -1880,3 +1880,35 @@ Maintain mandatory technical traceability for each meaningful fix iteration.
 
 Impact:
 Execution log now reflects current parser API compatibility fix and validation.
+
+## Update 126 — 2026-04-11
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (478-760)
+
+Change:
+Refined manual article adaptation prompt to prevent aggressive summarization:
+- added dynamic source-length-based output range (`minLength`/`maxLength`),
+- added explicit prohibition against collapsing long enumerations into generic short phrases,
+- added mandatory self-check requiring output size to stay within computed range,
+- added explicit instruction to return a detailed long post for large source texts.
+
+Reason:
+`/upload` output remained too short and lost expert-level detail compared to source article.
+
+Impact:
+Manual adaptation flow now steers the model toward preserving breadth and depth of long PDFs instead of producing compact summaries.
+
+## Update 127 — 2026-04-11
+
+File: progress.md  
+Lines: 94–96  
+
+Change:
+Logged prompt-quality diagnosis, implemented anti-summary prompt constraints, and post-change build/typecheck validation.
+
+Reason:
+Maintain required technical traceability for the current iteration.
+
+Impact:
+Execution log now captures the quality-fix cycle and successful local verification.

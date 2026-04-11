@@ -91,3 +91,6 @@
 [✓] Step 91 — Verified installed `pdf-parse` API is v2 class export (`PDFParse`) and not callable function.
 [✓] Step 92 — Updated PDF extraction flow to v2 API (`new PDFParse({ data }).getText()` + `destroy()`).
 [✓] Step 93 — Re-validated compile integrity after v2 parser migration (`npm run build`, `npm run typecheck` passed).
+[✓] Step 94 — Analyzed /upload adaptation output quality and isolated over-compression in manual-adaptation prompt.
+[✓] Step 95 — Added dynamic length constraints and anti-summary rules for manual article adaptation prompt.
+[✓] Step 96 — Re-validated compile integrity after prompt refinement (`npm run build`, `npm run typecheck` passed).
