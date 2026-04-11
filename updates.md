@@ -1760,3 +1760,59 @@ PDF parsing failed at runtime with “default is not a function”.
 
 Impact:
 PDF uploads should now parse correctly on the server.
+
+## Update 118 — 2026-04-11
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (1-140)
+
+Change:
+Switched pdf-parse loading to `createRequire` to reliably access the CommonJS export at runtime.
+
+Reason:
+Previous import resolution still returned a non-callable module in production.
+
+Impact:
+PDF parsing now uses the correct function export.
+
+## Update 119 — 2026-04-11
+
+File: progress.md  
+Lines: 82–83  
+
+Change:
+Added steps documenting CODEX authority re-check and repository search for server connection command references.
+
+Reason:
+Maintain traceable execution log for the current request per AGENTS.md.
+
+Impact:
+Keeps progress tracking auditable and up to date.
+
+## Update 120 — 2026-04-11
+
+File: progress.md  
+Lines: 84–85  
+
+Change:
+Logged git status check and recorded need for guidance due to unstaged src-module changes.
+
+Reason:
+AGENTS.md requires traceable execution steps and explicit pause when unexpected changes are present.
+
+Impact:
+Prevents accidental overwrite of existing unreviewed changes before verification runs.
+
+## Update 121 — 2026-04-11
+
+File: progress.md  
+Lines: 86–87  
+
+Change:
+Logged diff-scope review for publish and recorded missing GitHub CLI blocker.
+
+Reason:
+AGENTS.md requires execution steps and explicit blockers to be traceable.
+
+Impact:
+Publication flow is paused until gh is installed and authenticated.

@@ -78,3 +78,10 @@
 [✓] Step 78 — Replaced /upload prompt with the provided adaptation system prompt.
 [✓] Step 79 — Increased PDF upload size limit to 25 MB.
 [✓] Step 80 — Fixed pdf-parse import to resolve CommonJS default export at runtime.
+[✓] Step 81 — Switched pdf-parse loading to createRequire for stable CommonJS function export.
+[✓] Step 82 — Re-read `CODEX.md` to confirm task authority and scope for current request.
+[✓] Step 83 — Searched repository for server connection command references; none found.
+[✓] Step 84 — Checked git status; detected unstaged changes in src modules outside current edits.
+[✗] Step 85 — Awaiting instruction on how to proceed with existing unstaged changes before verification.
+[✓] Step 86 — Reviewed diff stats to scope changes for GitHub publish request.
+[✗] Step 87 — GitHub CLI missing; publish flow blocked pending gh installation and auth.
