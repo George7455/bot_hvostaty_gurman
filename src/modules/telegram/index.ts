@@ -1,5 +1,5 @@
 import { Context, Telegraf } from 'telegraf';
-import pdfParse from 'pdf-parse';
+import * as pdfParse from 'pdf-parse';
 
 import type { AppEnv } from '../../config/index.js';
 import type { ModerationModule } from '../moderation/index.js';
@@ -270,7 +270,10 @@ export class TelegramService implements TelegramModule {
 
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-      const parsed = await pdfParse(buffer);
+      const parser =
+        (pdfParse as unknown as { default?: (data: Buffer) => Promise<{ text?: string }> }).default ??
+        (pdfParse as unknown as (data: Buffer) => Promise<{ text?: string }>);
+      const parsed = await parser(buffer);
       const articleText = parsed.text?.trim() ?? '';
       if (articleText.length === 0) {
         await ctx.reply('PDF не содержит читаемого текста.');

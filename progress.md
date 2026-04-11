@@ -77,3 +77,4 @@
 [✓] Step 77 — Added PDF upload support for /upload with pdf-parse extraction.
 [✓] Step 78 — Replaced /upload prompt with the provided adaptation system prompt.
 [✓] Step 79 — Increased PDF upload size limit to 25 MB.
+[✓] Step 80 — Fixed pdf-parse import to resolve CommonJS default export at runtime.

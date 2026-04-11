@@ -1746,3 +1746,17 @@ User requested larger PDFs for /upload.
 
 Impact:
 Manual uploads can now accept larger PDF files.
+
+## Update 117 — 2026-04-11
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (1-140)
+
+Change:
+Adjusted pdf-parse import and invocation to handle CommonJS default export correctly in the compiled runtime.
+
+Reason:
+PDF parsing failed at runtime with “default is not a function”.
+
+Impact:
+PDF uploads should now parse correctly on the server.
