@@ -1659,3 +1659,18 @@ User requested another replacement of the primary prompt and asked to embed exam
 
 Impact:
 Initial draft generation now follows the newest style rubric and has explicit exemplar guidance.
+
+## Update 111 — 2026-04-11
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (31-220)
+
+Change:
+- Added output normalization to remove empty lines between paragraphs.
+- Strengthened prompt constraints to avoid inventing off-topic details and enforced no double line breaks.
+
+Reason:
+Generated drafts were not matching the required example style and were introducing unintended details.
+
+Impact:
+Outputs now preserve the requested paragraph format and adhere more strictly to input-only details.

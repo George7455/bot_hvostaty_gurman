@@ -50,6 +50,11 @@ function normalizeGeneratedText(text: string): string {
   normalized = normalized.replace(/\*\*(.*?)\*\*/g, '$1');
   normalized = normalized.replace(/\*(.*?)\*/g, '$1');
   normalized = normalized.replace(/__(.*?)__/g, '$1');
+  normalized = normalized
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0)
+    .join('\n');
 
   normalized = normalized
     .split('\n')
@@ -122,6 +127,7 @@ function buildTemporaryNeutralPrompt(input: InitialDraftGenerationInput): string
     'Если продукт или услуга не указаны, не упоминай никакие корма, игрушки, лакомства, аксессуары, магазины, консультации, сервисы и любые другие сущности.',
     '',
     'Если входных данных мало, делай текст сильным за счёт наблюдательности, ритма, бытовой точности и интонации, а не за счёт фантазии.',
+    'Не добавляй детали, которые не следуют из темы: время суток, конкретные предметы, упаковки, “сценарии”, которых нет во входных данных.',
     '',
     '2. Никакой фальшивой личной истории',
     '',
@@ -144,6 +150,7 @@ function buildTemporaryNeutralPrompt(input: InitialDraftGenerationInput): string
     '',
     'Пиши:',
     '— без пустых строк между абзацами;',
+    '— без двойных переносов строк;',
     '— без markdown-разметки;',
     '— без заголовков через #;',
     '— без списков и маркеров в самом посте;',
