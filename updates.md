@@ -1674,3 +1674,17 @@ Generated drafts were not matching the required example style and were introduci
 
 Impact:
 Outputs now preserve the requested paragraph format and adhere more strictly to input-only details.
+
+## Update 112 — 2026-04-11
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (88-156)
+
+Change:
+Explicitly required each paragraph to start on a new line while still forbidding blank lines between paragraphs.
+
+Reason:
+Telegram output was collapsing into a single block; the prompt needed an explicit newline-per-paragraph instruction.
+
+Impact:
+Model guidance now reinforces single line breaks between paragraphs without empty lines.

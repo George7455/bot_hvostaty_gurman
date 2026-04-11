@@ -72,3 +72,4 @@
 [✓] Step 72 — Updated the main prompt with the latest user-specified formatting and constraint rules.
 [✓] Step 73 — Replaced the main prompt with the stronger copywriter spec and embedded example outputs.
 [✓] Step 74 — Tightened prompt constraints and normalized output to remove blank lines between paragraphs.
+[✓] Step 75 — Added explicit “new line per paragraph” guidance to prevent single-block output in Telegram.
