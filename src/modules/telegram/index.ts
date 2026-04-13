@@ -10,6 +10,10 @@ import type { SessionsModule } from '../sessions/index.js';
 const UPLOAD_COMMAND = 'upload';
 const CANCEL_TEXT = 'cancel';
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
+const TELEGRAM_MAX_MESSAGE_CHARS = 4096;
+const TELEGRAM_DIRECT_PUBLISH_LIMIT = 3500;
+const TELEGRAM_FILE_FETCH_TIMEOUT_MS = 20_000;
+const TELEGRAM_FILE_FETCH_RETRIES = 3;
 
 export interface TelegramModule extends ModerationDeliveryPort, PublishingTransport {
   start(): Promise<void>;
@@ -18,8 +22,11 @@ export interface TelegramModule extends ModerationDeliveryPort, PublishingTransp
 
 export class TelegramService implements TelegramModule {
   private readonly bot: Telegraf;
+  private readonly botToken: string;
   private readonly moderatorChatIds: string[];
   private readonly channelId: string;
+  private readonly telegraphAccessToken: string | null;
+  private readonly telegraphShortName: string;
   private moderationModule: ModerationModule | null = null;
   private plannerModule: PlannerModule | null = null;
   private pdfParseClassPromise: Promise<PdfParseConstructor> | null = null;
@@ -29,8 +36,11 @@ export class TelegramService implements TelegramModule {
     private readonly sessionsModule: SessionsModule
   ) {
     this.bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
+    this.botToken = env.TELEGRAM_BOT_TOKEN;
     this.moderatorChatIds = parseModeratorChats(env.TELEGRAM_MODERATOR_CHAT_IDS);
     this.channelId = env.TELEGRAM_CHANNEL_ID;
+    this.telegraphAccessToken = env.TELEGRAPH_ACCESS_TOKEN ?? null;
+    this.telegraphShortName = env.TELEGRAPH_SHORT_NAME ?? 'hvostaty_gurman';
 
     this.registerHandlers();
   }
@@ -60,14 +70,17 @@ export class TelegramService implements TelegramModule {
       ]
     };
 
-    const message = `Draft ID: ${draftId}\n\n${text}`;
+    const readyPost = await this.buildReadyChannelPost(text);
+    const message = `Draft ID: ${draftId}\n\n${readyPost}`.slice(0, TELEGRAM_MAX_MESSAGE_CHARS);
     for (const chatId of this.moderatorChatIds) {
       await this.bot.telegram.sendMessage(chatId, message, { reply_markup: inlineKeyboard });
     }
   }
 
   public async publishToChannel(text: string): Promise<{ telegramChatId: string; telegramMessageId: string }> {
-    const result = await this.bot.telegram.sendMessage(this.channelId, text);
+    const payload = await this.buildReadyChannelPost(text);
+
+    const result = await this.bot.telegram.sendMessage(this.channelId, payload);
     return {
       telegramChatId: String(result.chat.id),
       telegramMessageId: String(result.message_id)
@@ -262,14 +275,9 @@ export class TelegramService implements TelegramModule {
         return;
       }
 
-      const fileUrl = await this.bot.telegram.getFileLink(fileId);
-      const response = await fetch(fileUrl.toString());
-      if (!response.ok) {
-        throw new Error(`Failed to download PDF: ${response.status}`);
-      }
+      await ctx.reply('PDF получен. Обрабатываю текст и формирую публикацию, это может занять до 1-2 минут.');
 
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
+      const buffer = await this.downloadPdfBuffer(fileId);
       const PdfParse = await this.getPdfParseClass();
       const parser = new PdfParse({ data: buffer });
       let parsed: { text?: string };
@@ -297,6 +305,36 @@ export class TelegramService implements TelegramModule {
     }
 
     return this.pdfParseClassPromise;
+  }
+
+  private async downloadPdfBuffer(fileId: string): Promise<Buffer> {
+    const fileLink = await this.bot.telegram.getFileLink(fileId);
+    const fileInfo = await this.bot.telegram.getFile(fileId);
+    const fallbackUrl = fileInfo.file_path
+      ? `https://api.telegram.org/file/bot${this.botToken}/${fileInfo.file_path}`
+      : null;
+    const sources = [fileLink.toString(), fallbackUrl].filter((url): url is string => Boolean(url));
+
+    let lastError: unknown = null;
+    for (const source of sources) {
+      try {
+        return await fetchBufferWithRetry(source, TELEGRAM_FILE_FETCH_RETRIES, TELEGRAM_FILE_FETCH_TIMEOUT_MS);
+      } catch (error: unknown) {
+        lastError = error;
+      }
+    }
+
+    throw new Error(`Failed to download PDF after retries: ${toErrorMessage(lastError)}`);
+  }
+
+  private async buildReadyChannelPost(text: string): Promise<string> {
+    const normalized = text.trim();
+    if (normalized.length <= TELEGRAM_DIRECT_PUBLISH_LIMIT) {
+      return normalized;
+    }
+
+    const page = await createTelegraphPage(normalized, this.telegraphShortName, this.telegraphAccessToken);
+    return buildTelegraphAnnouncement(normalized, page.url);
   }
 }
 
@@ -342,9 +380,50 @@ async function safeReply(ctx: Context, text: string): Promise<void> {
   }
 }
 
+async function fetchBufferWithRetry(url: string, attempts: number, timeoutMs: number): Promise<Buffer> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    } catch (error: unknown) {
+      lastError = error;
+      if (attempt < attempts) {
+        await wait(300 * attempt);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 interface PdfParseInstance {
   getText(): Promise<{ text?: string }>;
   destroy(): Promise<void>;
+}
+
+interface TelegraphResponse<T> {
+  ok: boolean;
+  result?: T;
+  error?: string;
+}
+
+interface TelegraphPageResult {
+  path: string;
+  url: string;
 }
 
 interface PdfParseConstructor {
@@ -391,4 +470,193 @@ function unwrapPdfParseClass(value: unknown): unknown {
   }
 
   return null;
+}
+
+async function createTelegraphPage(
+  text: string,
+  shortName: string,
+  presetAccessToken: string | null
+): Promise<TelegraphPageResult> {
+  const accessToken = presetAccessToken ?? await createTelegraphAccount(shortName);
+  const title = buildClickworthyTitle(text);
+  const content = JSON.stringify([
+    {
+      tag: 'p',
+      children: [buildTelegraphIntro(text)]
+    },
+    ...toTelegraphParagraphNodes(text)
+  ]);
+
+  const response = await fetch('https://api.telegra.ph/createPage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      access_token: accessToken,
+      title,
+      content
+    })
+  });
+
+  const data = (await response.json()) as TelegraphResponse<TelegraphPageResult>;
+  if (!response.ok || !data.ok || !data.result) {
+    throw new Error(`Failed to create Telegraph page: ${data.error ?? response.statusText}`);
+  }
+
+  return data.result;
+}
+
+async function createTelegraphAccount(shortName: string): Promise<string> {
+  const response = await fetch('https://api.telegra.ph/createAccount', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      short_name: shortName,
+      author_name: 'Хвостатый гурман'
+    })
+  });
+
+  const data = (await response.json()) as TelegraphResponse<{ access_token: string }>;
+  if (!response.ok || !data.ok || !data.result?.access_token) {
+    throw new Error(`Failed to create Telegraph account: ${data.error ?? response.statusText}`);
+  }
+
+  return data.result.access_token;
+}
+
+function toTelegraphParagraphNodes(text: string): Array<{ tag: 'p'; children: string[] }> {
+  return text
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0)
+    .map((paragraph) => ({ tag: 'p' as const, children: [paragraph] }));
+}
+
+function isPdfNoiseLine(line: string): boolean {
+  const normalized = line.toLowerCase().trim();
+  if (normalized.length === 0) {
+    return true;
+  }
+
+  const noisyPhrases = [
+    'время чтения',
+    'похожие статьи',
+    'поиск по сайту',
+    'используемая литература',
+    'бесплатная горячая линия',
+    'написать нам',
+    'оглавление',
+    'главная заводчикам',
+    'обучение заводчиков',
+    'статьи /'
+  ];
+
+  if (noisyPhrases.some((phrase) => normalized.includes(phrase))) {
+    return true;
+  }
+
+  return /^https?:\/\//i.test(normalized);
+}
+
+function buildClickworthyTitle(text: string): string {
+  const topic = inferTopic(text);
+  if (topic === 'training') {
+    return 'Как выбрать дрессировку собаке и не ошибиться: полный практический разбор';
+  }
+  if (topic === 'nutrition') {
+    return 'Как выстроить питание собаки без ошибок: практический разбор для владельцев';
+  }
+  if (topic === 'behavior') {
+    return 'Как понять поведение собаки и скорректировать его без стресса';
+  }
+
+  const candidates = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !isPdfNoiseLine(line))
+    .filter((line) => !/^\d+\s+of\s+\d+$/i.test(line))
+    .filter((line) => !/^(советы от экспертов:|от экспертов:)$/i.test(line))
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter((line) => line.length >= 18)
+    .filter((line) => !line.includes('/'))
+    .filter((line) => !line.includes('|'));
+
+  const firstSentence = candidates[0];
+  if (!firstSentence) {
+    return 'Практическая статья для владельцев собак';
+  }
+
+  const noPrefix = firstSentence
+    .replace(/^советы от экспертов:\s*/i, '')
+    .replace(/^виды дрессировок собак:\s*/i, 'Виды дрессировок собак: ')
+    .trim();
+  const titleBase = noPrefix.length > 0 ? noPrefix : firstSentence;
+  const cleanedTitle = titleBase.replace(/\s{2,}/g, ' ').trim();
+  return cleanedTitle.length > 100 ? `${cleanedTitle.slice(0, 97).trimEnd()}...` : cleanedTitle;
+}
+
+function buildTelegraphIntro(text: string): string {
+  const benefit = extractBenefitSentence(text);
+  return `Что вы получите после чтения: ${benefit}`;
+}
+
+function extractBenefitSentence(text: string): string {
+  const topic = inferTopic(text);
+  if (topic === 'training') {
+    return 'вы поймете, какой формат дрессировки подходит именно вашей собаке, с чего безопасно начинать и каких ошибок избегать на каждом этапе.';
+  }
+  if (topic === 'nutrition') {
+    return 'вы получите практичную схему питания, критерии выбора рациона и признаки, по которым вовремя заметить ошибки.';
+  }
+  if (topic === 'behavior') {
+    return 'вы получите рабочие ориентиры по причинам проблемного поведения и понятный план корректировки без перегруза.';
+  }
+
+  const normalized = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !isPdfNoiseLine(line))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const sentences = normalized
+    .split(/[.!?]/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 40);
+  const preferred = sentences.find((line) => /подходит|выбрать|ошиб|поможет|как|когда/i.test(line));
+
+  if (preferred) {
+    return preferred.length > 180 ? `${preferred.slice(0, 177).trimEnd()}...` : preferred;
+  }
+
+  return 'понятные рекомендации, практические критерии выбора и разбор типичных ошибок без воды.';
+}
+
+function inferTopic(text: string): 'training' | 'nutrition' | 'behavior' | 'general' {
+  const normalized = text.toLowerCase();
+  if (/(дрессиров|окд|угс|зкс|кинолог|обидиенс|мондьоринг)/i.test(normalized)) {
+    return 'training';
+  }
+
+  if (/(корм|питан|рацион|жкт|аллерг|лакомств)/i.test(normalized)) {
+    return 'nutrition';
+  }
+
+  if (/(поведен|тревож|страх|агресс|реактив|социал)/i.test(normalized)) {
+    return 'behavior';
+  }
+
+  return 'general';
+}
+
+function buildTelegraphAnnouncement(text: string, url: string): string {
+  const title = buildClickworthyTitle(text);
+  const benefit = extractBenefitSentence(text);
+  return [
+    `Заголовок: ${title}`,
+    `Что получите: ${benefit}`,
+    'Откройте полную статью, чтобы применить рекомендации на практике без проб и ошибок.',
+    `Читать полностью: ${url}`
+  ].join('\n\n');
 }

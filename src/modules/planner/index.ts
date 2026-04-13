@@ -6,7 +6,7 @@ import type { ModerationModule } from '../moderation/index.js';
 import type { SheetsModule } from '../sheets/index.js';
 
 const MOSCOW_TIMEZONE = 'Europe/Moscow';
-const PLANNED_HOURS = new Set([9, 15, 21]);
+const PLANNED_HOURS = new Set([9, 17]);
 const SCHEDULE_MINUTE_WINDOW = 5;
 const PLANNER_STATE_PATH = resolve(process.cwd(), '.planner-state.json');
 

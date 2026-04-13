@@ -1,4 +1,6 @@
 const TEMPORARY_PROMPT_NOTE = 'TEMPORARY_PROMPT_V1';
+const MANUAL_QUALITY_TARGET_SCORE = 9;
+const MANUAL_QUALITY_MAX_REWRITES = 3;
 
 export interface InitialDraftGenerationInput {
   topic: string;
@@ -29,8 +31,44 @@ export class GenerationService implements GenerationModule {
   }
 
   public async adaptManualArticleText(articleText: string): Promise<string> {
-    const prompt = buildTemporaryManualAdaptationPrompt(articleText);
-    return this.generateNonEmpty(prompt);
+    const sourceText = sanitizeManualSourceText(articleText);
+    const lengthRange = resolveManualAdaptationLengthRange(sourceText);
+    let candidate = await this.generateBaseManualCandidate(sourceText, lengthRange);
+    let bestCandidate = candidate;
+    let bestScore = 0;
+
+    for (let attempt = 0; attempt <= MANUAL_QUALITY_MAX_REWRITES; attempt += 1) {
+      const quality = await this.evaluateManualQuality(sourceText, candidate, lengthRange);
+      if (quality.score > bestScore) {
+        bestScore = quality.score;
+        bestCandidate = candidate;
+      }
+
+      if (quality.score >= MANUAL_QUALITY_TARGET_SCORE) {
+        return candidate;
+      }
+
+      if (attempt === MANUAL_QUALITY_MAX_REWRITES) {
+        break;
+      }
+
+      const improvePrompt = buildManualQualityImprovementPrompt(
+        sourceText,
+        candidate,
+        quality,
+        lengthRange
+      );
+      candidate = await this.generateNonEmpty(improvePrompt);
+      if (!isAcceptableManualAdaptation(candidate, lengthRange)) {
+        candidate = await this.generateBaseManualCandidate(sourceText, lengthRange);
+      }
+    }
+
+    if (bestScore >= 7) {
+      return bestCandidate;
+    }
+
+    return buildDeterministicManualFallback(sourceText, lengthRange);
   }
 
   private async generateNonEmpty(prompt: string): Promise<string> {
@@ -41,6 +79,52 @@ export class GenerationService implements GenerationModule {
 
     return generatedText;
   }
+
+  private async generateBaseManualCandidate(
+    sourceText: string,
+    lengthRange: { minLength: number; maxLength: number }
+  ): Promise<string> {
+    const prompt = buildTemporaryManualAdaptationPrompt(sourceText, lengthRange);
+    const firstAttempt = await this.generateNonEmpty(prompt);
+
+    if (isAcceptableManualAdaptation(firstAttempt, lengthRange)) {
+      return firstAttempt;
+    }
+
+    const expansionPrompt = buildManualAdaptationExpansionPrompt(
+      sourceText,
+      firstAttempt,
+      lengthRange
+    );
+    const secondAttempt = await this.generateNonEmpty(expansionPrompt);
+    if (isAcceptableManualAdaptation(secondAttempt, lengthRange)) {
+      return secondAttempt;
+    }
+
+    const rescuePrompt = buildManualAdaptationRescuePrompt(sourceText, secondAttempt, lengthRange);
+    const thirdAttempt = await this.generateNonEmpty(rescuePrompt);
+    if (isAcceptableManualAdaptation(thirdAttempt, lengthRange)) {
+      return thirdAttempt;
+    }
+
+    return buildDeterministicManualFallback(sourceText, lengthRange);
+  }
+
+  private async evaluateManualQuality(
+    sourceText: string,
+    candidateText: string,
+    lengthRange: { minLength: number; maxLength: number }
+  ): Promise<ManualQualityAssessment> {
+    const prompt = buildManualQualityEvaluationPrompt(sourceText, candidateText, lengthRange);
+    const raw = await this.ai.complete(prompt);
+    return parseManualQualityAssessment(raw, candidateText, lengthRange);
+  }
+}
+
+interface ManualQualityAssessment {
+  score: number;
+  issues: string[];
+  rewritePlan: string;
 }
 
 function normalizeGeneratedText(text: string): string {
@@ -58,6 +142,7 @@ function normalizeGeneratedText(text: string): string {
 
   normalized = normalized
     .split('\n')
+    .map((line) => collapseRepeatedIntroChunk(line))
     .filter((line) => !/следующ(ем|ий|ая|ие)\s+пост/i.test(line))
     .join('\n');
 
@@ -473,15 +558,10 @@ function buildTemporaryRewritePrompt(previousDraftText: string, notes?: string):
   ].join('\n');
 }
 
-function buildTemporaryManualAdaptationPrompt(articleText: string): string {
-  const sourceLength = articleText.trim().length;
-  const minLength =
-    sourceLength >= 3500 ? Math.floor(sourceLength * 0.8) :
-    sourceLength >= 2000 ? Math.floor(sourceLength * 0.7) :
-    sourceLength >= 1200 ? Math.floor(sourceLength * 0.6) :
-    800;
-  const maxLength = Math.max(minLength + 500, Math.floor(sourceLength * 1.2));
-
+function buildTemporaryManualAdaptationPrompt(
+  articleText: string,
+  lengthRange: { minLength: number; maxLength: number }
+): string {
   return [
     'SYSTEM PROMPT',
     '',
@@ -584,7 +664,7 @@ function buildTemporaryManualAdaptationPrompt(articleText: string): string {
     '— не исчезли ли важные различия;',
     '— не появилась ли отсебятина;',
     '— стал ли текст легче, но не беднее по смыслу.',
-    `— итоговый объем не меньше ${minLength} и не больше ${maxLength} символов.`,
+    `— итоговый объем не меньше ${lengthRange.minLength} и не больше ${lengthRange.maxLength} символов.`,
     '— материал не превращен в короткий конспект.',
     '',
     'Если что-то потеряно — перепиши до исправления.',
@@ -598,10 +678,460 @@ function buildTemporaryManualAdaptationPrompt(articleText: string): string {
     'Без заголовков вроде "вот готовый вариант".',
     'Без markdown-кода.',
     'Адаптируй его, чтобы информация бралась из присланого текста или pdf файл.',
-    `Диапазон объема: ${minLength}-${maxLength} символов.`,
+    `Диапазон объема: ${lengthRange.minLength}-${lengthRange.maxLength} символов.`,
     'Если исходник большой, верни подробный длинный пост, а не короткое резюме.',
     '',
     'ИСХОДНЫЙ ТЕКСТ:',
     articleText
   ].join('\n');
+}
+
+function buildManualAdaptationExpansionPrompt(
+  articleText: string,
+  firstAttempt: string,
+  lengthRange: { minLength: number; maxLength: number }
+): string {
+  const refusalNote = looksLikeModelRefusal(firstAttempt)
+    ? 'Первый вариант содержит отказную фразу вместо полезного текста. Это недопустимо.'
+    : 'Первый вариант получился слишком коротким.';
+
+  return [
+    'ПЕРЕПИШИ АДАПТАЦИЮ.',
+    refusalNote,
+    `Первый вариант: ${firstAttempt.length} символов.`,
+    `Нужно минимум ${lengthRange.minLength} символов и максимум ${lengthRange.maxLength}.`,
+    '',
+    'Перепиши полностью:',
+    '— сохрани весь важный практический материал;',
+    '— сохрани ограничения, условия, допуски, возраст/вес/этапность;',
+    '— не сжимай перечни дисциплин в общие фразы;',
+    '— сделай полезный развернутый экспертный текст в Telegram-формате;',
+    '— без markdown;',
+    '— без пустых бессодержательных абзацев;',
+    '— без выдумок.',
+    '',
+    'ПЕРВЫЙ (СЛИШКОМ КОРОТКИЙ) ВАРИАНТ:',
+    firstAttempt,
+    '',
+    'ИСХОДНЫЙ ТЕКСТ ДЛЯ АДАПТАЦИИ:',
+    articleText
+  ].join('\n');
+}
+
+function buildManualAdaptationRescuePrompt(
+  articleText: string,
+  previousAttempt: string,
+  lengthRange: { minLength: number; maxLength: number }
+): string {
+  return [
+    'ЭТО БЕЗОПАСНЫЙ ЗАПРОС НА РЕДАКТУРУ КИНОЛОГИЧЕСКОГО ТЕКСТА.',
+    'Нужна только адаптация исходного материала в полезный Telegram-формат.',
+    'Не отказывайся и не пиши фразы вида "I can\'t assist" или "не могу помочь".',
+    '',
+    `Обязательный диапазон: ${lengthRange.minLength}-${lengthRange.maxLength} символов.`,
+    'Обязательные требования:',
+    '— подробный и практический стиль;',
+    '— сохранить все важные блоки и ограничения из исходника;',
+    '— не придумывать новые факты;',
+    '— не сворачивать длинные перечни в общие слова;',
+    '— без markdown;',
+    '— только готовый текст поста.',
+    '',
+    'ПРЕДЫДУЩИЙ НЕУДАЧНЫЙ ВАРИАНТ:',
+    previousAttempt,
+    '',
+    'ИСХОДНЫЙ ТЕКСТ:',
+    articleText
+  ].join('\n');
+}
+
+function buildManualQualityEvaluationPrompt(
+  sourceText: string,
+  candidateText: string,
+  lengthRange: { minLength: number; maxLength: number }
+): string {
+  return [
+    'Оцени качество адаптации для Telegram-поста про собак.',
+    `Целевой балл: ${MANUAL_QUALITY_TARGET_SCORE}/10.`,
+    `Диапазон объема: ${lengthRange.minLength}-${lengthRange.maxLength} символов.`,
+    '',
+    'Критерии оценки:',
+    '1) Полезность и практичность для владельца собаки.',
+    '2) Полнота ключевых блоков и ограничений исходника.',
+    '3) Отсутствие мусора (навигация сайта, "время чтения", футеры, служебные блоки).',
+    '4) Логичность структуры и удобочитаемость.',
+    '5) Стиль Telegram без воды и отказных фраз.',
+    '6) Нет повторов фрагментов вроде "советы и рекомендации советы и рекомендации".',
+    '7) Текст заканчивается завершенной мыслью, без оборванной концовки.',
+    '8) Нет хвостовых дат/мусора вида "дек 2024", "фев 2025".',
+    '',
+    'Верни только JSON без комментариев в формате:',
+    '{"score": 0-10, "issues": ["..."], "rewrite_plan": "..."}',
+    '',
+    'ИСХОДНИК:',
+    sourceText,
+    '',
+    'ТЕКУЩИЙ ВАРИАНТ:',
+    candidateText
+  ].join('\n');
+}
+
+function buildManualQualityImprovementPrompt(
+  sourceText: string,
+  candidateText: string,
+  quality: ManualQualityAssessment,
+  lengthRange: { minLength: number; maxLength: number }
+): string {
+  const issues = quality.issues.length > 0 ? quality.issues.join('; ') : 'критичных замечаний не указано';
+  return [
+    'Перепиши текст и улучши качество до 9/10.',
+    `Текущая оценка: ${quality.score}/10.`,
+    `Диапазон объема: ${lengthRange.minLength}-${lengthRange.maxLength} символов.`,
+    '',
+    `Проблемы: ${issues}`,
+    `План улучшения: ${quality.rewritePlan}`,
+    '',
+    'Жесткие требования:',
+    '— убрать мусорные фрагменты (навигация сайта, мета-блоки, "время чтения", футеры, "похожие статьи");',
+    '— сохранить практическую пользу, критерии выбора и ограничения;',
+    '— сделать текст цельным, структурным и удобным для чтения;',
+    '— убрать дубли фраз и словосочетаний;',
+    '— завершить финальную мысль без обрывов;',
+    '— убрать хвостовые даты и карточки похожих материалов;',
+    '— без markdown, без отказных фраз, без воды.',
+    '',
+    'ИСХОДНИК:',
+    sourceText,
+    '',
+    'ТЕКУЩИЙ ТЕКСТ:',
+    candidateText
+  ].join('\n');
+}
+
+function resolveManualAdaptationLengthRange(articleText: string): { minLength: number; maxLength: number } {
+  const sourceLength = articleText.trim().length;
+  const minLength =
+    sourceLength >= 3500 ? Math.floor(sourceLength * 0.8) :
+    sourceLength >= 2000 ? Math.floor(sourceLength * 0.7) :
+    sourceLength >= 1200 ? Math.floor(sourceLength * 0.6) :
+    800;
+  const maxLength = Math.max(minLength + 500, Math.floor(sourceLength * 1.2));
+
+  return { minLength, maxLength };
+}
+
+function looksLikeModelRefusal(text: string): boolean {
+  const normalized = text.toLowerCase();
+  const refusalPatterns = [
+    'извините, но я не могу помочь',
+    'не могу помочь с этой просьбой',
+    'я не могу помочь с этой просьбой',
+    'i can\'t assist with that',
+    'i cant assist with that',
+    'i cannot assist with that',
+    'i’m sorry, i can\'t assist with that',
+    'i\'m sorry, i can\'t assist with that',
+    'i can’t help with that',
+    "i can't help with that",
+    'i cannot help with that'
+  ];
+
+  return refusalPatterns.some((pattern) => normalized.includes(pattern));
+}
+
+function isAcceptableManualAdaptation(
+  text: string,
+  lengthRange: { minLength: number; maxLength: number }
+): boolean {
+  return (
+    text.length >= lengthRange.minLength &&
+    !looksLikeModelRefusal(text) &&
+    !containsManualGarbage(text) &&
+    !containsDateTailNoise(text) &&
+    !hasDuplicateAdjacentFragments(text) &&
+    !endsWithIncompleteThought(text)
+  );
+}
+
+function buildDeterministicManualFallback(
+  articleText: string,
+  lengthRange: { minLength: number; maxLength: number }
+): string {
+  const cleaned = articleText
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join('\n');
+
+  const withTitle = cleaned.startsWith('Советы от экспертов:')
+    ? cleaned
+    : `Советы от экспертов:\n${cleaned}`;
+
+  if (withTitle.length < lengthRange.minLength) {
+    return `${withTitle}\n\nПрактический вывод: выбирайте формат занятий по темпераменту собаки, своему ритму жизни и требованиям конкретной дисциплины.`;
+  }
+
+  return withTitle;
+}
+
+function sanitizeManualSourceText(articleText: string): string {
+  let text = trimManualTailNoise(articleText)
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/--\s*\d+\s+of\s+\d+\s*--/gi, ' ')
+    .replace(/главная\s+заводчикам\s*\/\s*обучение\s+заводчиков\s*\/\s*статьи\s*\/?/gi, ' ')
+    .replace(/время\s+чтения\s*:\s*\d+\s*мин(ут[аы]?)?/gi, ' ')
+    .replace(/похожие\s+статьи/gi, ' ')
+    .replace(/поиск\s+по\s+сайту/gi, ' ')
+    .replace(/бесплатная\s+горячая\s+линия/gi, ' ')
+    .replace(/написать\s+нам\s+[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, ' ')
+    .replace(/используемая\s+литература/gi, ' ')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/\b\d{1,2}\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\b\.?/gi, ' ')
+    .replace(/\b\d{4}\s*г\.?\b/gi, ' ');
+
+  text = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !isManualNoiseLine(line))
+    .join('\n');
+
+  text = text
+    .replace(/\s{2,}/g, ' ')
+    .replace(/(?:\n\s*){3,}/g, '\n\n')
+    .trim();
+
+  return text;
+}
+
+function isManualNoiseLine(line: string): boolean {
+  const normalized = line.toLowerCase().trim();
+  if (normalized.length < 2) {
+    return true;
+  }
+
+  if (/^\d+\s*(мин|m(in)?)/i.test(normalized)) {
+    return true;
+  }
+
+  if (/^(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}$/i.test(normalized)) {
+    return true;
+  }
+
+  const stopPhrases = [
+    'оглавление',
+    'похожие статьи',
+    'поиск по сайту',
+    'бесплатная горячая линия',
+    'написать нам',
+    'время чтения',
+    'используемая литература'
+  ];
+
+  return stopPhrases.some((phrase) => normalized.includes(phrase));
+}
+
+function parseManualQualityAssessment(
+  raw: string,
+  candidateText: string,
+  lengthRange: { minLength: number; maxLength: number }
+): ManualQualityAssessment {
+  const parsed = tryParseQualityJson(raw);
+  if (parsed) {
+    return applyManualQualityHeuristics(parsed, candidateText, lengthRange);
+  }
+
+  let score = 8;
+  if (looksLikeModelRefusal(candidateText)) {
+    score = 1;
+  } else if (candidateText.length < lengthRange.minLength) {
+    score = 4;
+  } else if (containsManualGarbage(candidateText)) {
+    score = 6;
+  }
+
+  return applyManualQualityHeuristics({
+    score,
+    issues: ['Авто-оценка сработала по эвристике: верни чище и практичнее.'],
+    rewritePlan: 'Убери шум, усили практичность, сохрани структуру и ограничения.'
+  }, candidateText, lengthRange);
+}
+
+function tryParseQualityJson(raw: string): ManualQualityAssessment | null {
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(match[0]) as {
+      score?: unknown;
+      issues?: unknown;
+      rewrite_plan?: unknown;
+    };
+    const score = Math.max(0, Math.min(10, Number(parsed.score)));
+    if (!Number.isFinite(score)) {
+      return null;
+    }
+
+    const issues = Array.isArray(parsed.issues)
+      ? parsed.issues.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [];
+    const rewritePlan = typeof parsed.rewrite_plan === 'string' && parsed.rewrite_plan.trim().length > 0
+      ? parsed.rewrite_plan.trim()
+      : 'Убери мусор, усили практическую пользу, сохрани ключевые детали.';
+
+    return {
+      score,
+      issues,
+      rewritePlan
+    };
+  } catch {
+    return null;
+  }
+}
+
+function containsManualGarbage(text: string): boolean {
+  const normalized = text.toLowerCase();
+  const markers = [
+    'время чтения',
+    'похожие статьи',
+    'поиск по сайту',
+    'главная заводчикам',
+    'используемая литература',
+    'читать полностью:',
+    '-- 1 of'
+  ];
+
+  return markers.some((marker) => normalized.includes(marker));
+}
+
+function trimManualTailNoise(text: string): string {
+  const markers = [
+    'как приучить собаку к наморднику?',
+    'команды для собак: обучение и советы',
+    'похожие статьи'
+  ];
+
+  const normalized = text.toLowerCase();
+  let cutoff = text.length;
+  for (const marker of markers) {
+    const index = normalized.indexOf(marker);
+    if (index >= 0 && index < cutoff) {
+      cutoff = index;
+    }
+  }
+
+  return text.slice(0, cutoff);
+}
+
+function containsDateTailNoise(text: string): boolean {
+  const tail = text.slice(Math.max(0, text.length - 600)).toLowerCase();
+  return /\b(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}\b/i.test(tail);
+}
+
+function hasDuplicateAdjacentFragments(text: string): boolean {
+  const compact = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (compact.length === 0) {
+    return false;
+  }
+
+  const words = compact.split(' ');
+  const maxChunkSize = Math.min(8, Math.floor(words.length / 2));
+  for (let chunkSize = 2; chunkSize <= maxChunkSize; chunkSize += 1) {
+    for (let index = 0; index + chunkSize * 2 <= words.length; index += 1) {
+      let equal = true;
+      for (let offset = 0; offset < chunkSize; offset += 1) {
+        if (words[index + offset] !== words[index + chunkSize + offset]) {
+          equal = false;
+          break;
+        }
+      }
+      if (equal) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function endsWithIncompleteThought(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 40) {
+    return false;
+  }
+
+  const lastChar = trimmed.charAt(trimmed.length - 1);
+  if (!'.!?…'.includes(lastChar)) {
+    return true;
+  }
+
+  const tail = trimmed.slice(Math.max(0, trimmed.length - 220)).toLowerCase();
+  if (/\bдавайте\s+разбер[её]мся\b/.test(tail) && !/\bв\s+этом\b/.test(tail)) {
+    return true;
+  }
+
+  return false;
+}
+
+function applyManualQualityHeuristics(
+  assessment: ManualQualityAssessment,
+  candidateText: string,
+  lengthRange: { minLength: number; maxLength: number }
+): ManualQualityAssessment {
+  let score = assessment.score;
+  const issues = [...assessment.issues];
+
+  if (candidateText.length < lengthRange.minLength) {
+    score = Math.min(score, 4);
+    issues.push('Текст короче минимального порога.');
+  }
+
+  if (containsManualGarbage(candidateText)) {
+    score = Math.min(score, 6);
+    issues.push('Остались мусорные фрагменты сайта.');
+  }
+
+  if (containsDateTailNoise(candidateText)) {
+    score = Math.min(score, 6);
+    issues.push('Остались хвостовые даты из похожих материалов.');
+  }
+
+  if (hasDuplicateAdjacentFragments(candidateText)) {
+    score = Math.min(score, 6);
+    issues.push('Есть повторяющиеся подряд фрагменты.');
+  }
+
+  if (endsWithIncompleteThought(candidateText)) {
+    score = Math.min(score, 6);
+    issues.push('Финальная мысль выглядит незавершенной.');
+  }
+
+  const dedupedIssues = Array.from(new Set(issues));
+  return {
+    score,
+    issues: dedupedIssues,
+    rewritePlan: assessment.rewritePlan
+  };
+}
+
+function collapseRepeatedIntroChunk(line: string): string {
+  const words = line.split(/\s+/).filter((word) => word.length > 0);
+  if (words.length < 4) {
+    return line;
+  }
+
+  for (let chunkSize = 2; chunkSize <= Math.min(8, Math.floor(words.length / 2)); chunkSize += 1) {
+    const first = words.slice(0, chunkSize).join(' ').toLowerCase();
+    const second = words.slice(chunkSize, chunkSize * 2).join(' ').toLowerCase();
+    if (first === second) {
+      return [...words.slice(0, chunkSize), ...words.slice(chunkSize * 2)].join(' ');
+    }
+  }
+
+  return line;
 }

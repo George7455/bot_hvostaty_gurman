@@ -21,7 +21,9 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().min(1).optional(),
   OPENAI_MODEL: z.string().min(1).optional(),
   AI_PROXY_URL: z.string().url().optional(),
-  AI_PROXY_SECRET: z.string().min(1).optional()
+  AI_PROXY_SECRET: z.string().min(1).optional(),
+  TELEGRAPH_ACCESS_TOKEN: z.string().min(1).optional(),
+  TELEGRAPH_SHORT_NAME: z.string().min(1).optional()
 }).superRefine((data, ctx) => {
   if (data.AI_PROXY_URL) {
     if (!data.AI_PROXY_SECRET) {

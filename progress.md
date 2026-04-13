@@ -94,3 +94,49 @@
 [✓] Step 94 — Analyzed /upload adaptation output quality and isolated over-compression in manual-adaptation prompt.
 [✓] Step 95 — Added dynamic length constraints and anti-summary rules for manual article adaptation prompt.
 [✓] Step 96 — Re-validated compile integrity after prompt refinement (`npm run build`, `npm run typecheck` passed).
+[✓] Step 97 — Identified that /upload adaptation still under-delivered depth and added hard minimum-length guard logic.
+[✓] Step 98 — Added second-pass expansion prompt for manual adaptation when first result is shorter than target range.
+[✓] Step 99 — Re-validated compile integrity after two-pass adaptation update (`npm run build`, `npm run typecheck` passed).
+[✓] Step 100 — Diagnosed refusal-style /upload outputs and added refusal detection for manual adaptation results.
+[✓] Step 101 — Extended second-pass adaptation prompt to recover from refusal responses and force useful long-form output.
+[✓] Step 102 — Re-validated compile integrity after refusal-recovery update (`npm run build`, `npm run typecheck` passed).
+[✓] Step 103 — Added explicit PDF->TXT normalization step before manual adaptation handoff to AI.
+[✓] Step 104 — Implemented PDF text cleanup for line-wrap joins, control-char removal, and paragraph restoration.
+[✓] Step 105 — Re-validated compile integrity after PDF normalization update (`npm run build`, `npm run typecheck` passed).
+[✓] Step 106 — Reproduced refusal-style English fallback in /upload output and expanded refusal phrase coverage.
+[✓] Step 107 — Added strict multi-pass adaptation acceptance gate with rescue prompt and final hard-fail on refusal/under-detail.
+[✓] Step 108 — Re-validated compile integrity after refusal-hardening update (`npm run build`, `npm run typecheck` passed).
+[✓] Step 109 — Investigated persistent refusal regressions in /upload flow and replaced terminal hard-fail with deterministic fallback.
+[✓] Step 110 — Added fallback that returns cleaned PDF-based long-form text when all AI passes fail acceptance checks.
+[✓] Step 111 — Re-validated compile integrity after fallback safeguard update (`npm run build`, `npm run typecheck` passed).
+[✓] Step 112 — Reproduced Telegram API 400 `message is too long` during /upload moderation delivery.
+[✓] Step 113 — Added moderation message length guard with clipped preview fallback for oversized drafts.
+[✓] Step 114 — Re-validated compile integrity after Telegram length-guard update (`npm run build`, `npm run typecheck` passed).
+[✓] Step 115 — Reproduced local startup crash path on Telegram `ECONNRESET` despite timeout wrapper.
+[✓] Step 116 — Hardened startup timeout helper to treat Telegram launch exceptions as non-fatal and continue boot.
+[✓] Step 117 — Re-validated compile integrity after Telegram-start resilience fix (`npm run build`, `npm run typecheck` passed).
+[✓] Step 118 — Implemented long-form publish strategy: long drafts now route to Telegraph instead of single-message Telegram publish.
+[✓] Step 119 — Added click-oriented channel announcement builder (title + reader benefit + CTA + article link) for long-form posts.
+[✓] Step 120 — Re-validated compile integrity after Telegraph publish integration (`npm run build`, `npm run typecheck` passed).
+[✓] Step 121 — Reworked moderation delivery to send one ready-to-publish post (with Telegraph + CTA) instead of chunked preview parts.
+[✓] Step 122 — Unified moderation and channel publishing payload generation via shared ready-post builder.
+[✓] Step 123 — Re-validated compile integrity after ready-post moderation flow update (`npm run build`, `npm run typecheck` passed).
+[✓] Step 124 — Reproduced `/upload` transport failure (`fetch failed`) during Telegram PDF file download.
+[✓] Step 125 — Added resilient Telegram file download path (retry, timeout, and alternate file URL source).
+[✓] Step 126 — Re-validated compile integrity after PDF download resilience update (`npm run build`, `npm run typecheck` passed).
+[✓] Step 127 — Reviewed generated Telegraph title/preview quality and identified residual PDF navigation/noise leakage.
+[✓] Step 128 — Tightened PDF noise filtering and improved click-title/benefit extraction heuristics for Telegraph announcements.
+[✓] Step 129 — Re-validated compile integrity after Telegraph copy cleanup update (`npm run build`, `npm run typecheck` passed).
+[✓] Step 130 — Re-reviewed `/upload` output and confirmed residual web-navigation artifacts still leak into adapted content.
+[✓] Step 131 — Added pre-prompt source sanitization in generation module plus topic-aware title/benefit templates for Telegraph teasers.
+[✓] Step 132 — Re-validated compile integrity after sanitization and teaser upgrades (`npm run build`, `npm run typecheck` passed).
+[✓] Step 133 — Implemented iterative quality loop for manual adaptation with AI score gate targeting 9/10 before moderation handoff.
+[✓] Step 134 — Added explicit processing-status reply for PDF uploads so users see active progress during long generation.
+[✓] Step 135 — Re-validated compile integrity after quality-loop and UX-status updates (`npm run build`, `npm run typecheck` passed).
+[✓] Step 136 — Reproduced reported output defects from real `/upload` sample (repeated fragments, dated tail noise, and unfinished ending) and mapped gap points in manual adaptation quality gates.
+[✓] Step 137 — Tightened manual adaptation quality controls in generation module: stronger prompt constraints, duplicate/date tail rejection, incomplete-ending rejection, and deterministic score penalties.
+[✓] Step 138 — Re-validated compile integrity after manual quality hardening (`npm run typecheck`, `npm run build` passed).
+[✗] Step 139 — Attempted live `/upload` diagnostic run against OpenAI on real local PDF (`~/Downloads/Telegram Desktop/file.pdf`) but runtime verification blocked by network reachability / long-running external API call in this environment.
+[✓] Step 140 — Rolled back `/upload` PDF-to-text pre-normalization in Telegram document handler and restored direct `pdf-parse` text pass-through (`parsed.text?.trim()`).
+[✓] Step 141 — Removed PDF text normalization pipeline helpers from Telegram module (`normalizePdfTextForAi` + old noise-line prefilter usage in extraction path).
+[✓] Step 142 — Re-validated compile integrity after PDF preprocessing rollback (`npm run typecheck`, `npm run build` passed).

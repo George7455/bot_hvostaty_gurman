@@ -1912,3 +1912,545 @@ Maintain required technical traceability for the current iteration.
 
 Impact:
 Execution log now captures the quality-fix cycle and successful local verification.
+
+## Update 128 — 2026-04-13
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (20-70, 490-820)
+
+Change:
+Implemented two-pass manual adaptation generation for `/upload`:
+- `adaptManualArticleText()` now computes target range and validates first-generation length,
+- added fallback expansion prompt when first output is shorter than required minimum,
+- extracted reusable length-range resolver (`resolveManualAdaptationLengthRange`),
+- refactored manual-adaptation prompt builder to accept explicit target range.
+
+Reason:
+Single-pass adaptation still produced compressed summaries instead of detailed practical posts.
+
+Impact:
+When model under-compresses output, the second pass forces expansion and improves practical coverage.
+
+## Update 129 — 2026-04-13
+
+File: progress.md  
+Lines: 97–99  
+
+Change:
+Logged depth-gap diagnosis, two-pass adaptation implementation, and post-change build/typecheck verification.
+
+Reason:
+Maintain required traceability for current `/upload` quality-fix iteration.
+
+Impact:
+Execution log now reflects the additional robustness layer for long-form adaptation quality.
+
+## Update 130 — 2026-04-13
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (31-47, 620-706)
+
+Change:
+Added refusal-recovery handling for `/upload` adaptation:
+- introduced `looksLikeModelRefusal()` matcher for common refusal phrases,
+- updated manual adaptation success condition to require both minimum length and non-refusal output,
+- enhanced second-pass expansion prompt with explicit refusal-case note and forced re-adaptation.
+
+Reason:
+Runtime produced refusal text (“Извините, но я не могу помочь с этой просьбой.”) as draft content.
+
+Impact:
+Manual adaptation now retries automatically when first generation is refusal-like, reducing refusal text leakage into moderation drafts.
+
+## Update 131 — 2026-04-13
+
+File: progress.md  
+Lines: 100–102  
+
+Change:
+Logged refusal diagnosis, recovery implementation, and post-change build/typecheck verification.
+
+Reason:
+Maintain mandatory change traceability for the `/upload` quality-fix iteration.
+
+Impact:
+Execution tracking now includes refusal-handling safeguards for manual adaptation flow.
+
+## Update 132 — 2026-04-13
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (276-307, 364-386)
+
+Change:
+Introduced explicit PDF-to-TXT normalization before AI adaptation:
+- replaced direct `parsed.text?.trim()` usage with `normalizePdfTextForAi(parsed.text ?? '')`,
+- added `normalizePdfTextForAi()` helper that:
+  - normalizes line endings,
+  - removes control characters,
+  - joins hyphen-split words across PDF line wraps,
+  - flattens hard wraps inside paragraphs while preserving paragraph boundaries.
+
+Reason:
+Raw PDF extraction can contain wrapped lines, split words, and control characters that degrade AI adaptation quality.
+
+Impact:
+OpenAI now receives cleaner plain-text content, improving readability and reducing formatting noise in `/upload` outputs.
+
+## Update 133 — 2026-04-13
+
+File: progress.md  
+Lines: 103–105  
+
+Change:
+Logged PDF normalization implementation and post-change build/typecheck verification.
+
+Reason:
+Maintain required execution traceability for the `/upload` quality-improvement iteration.
+
+Impact:
+Execution log now includes the PDF-to-TXT preprocessing step and validation status.
+
+## Update 134 — 2026-04-13
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (31-60, 640-760)
+
+Change:
+Hardened `/upload` manual adaptation against refusal leakage:
+- added `isAcceptableManualAdaptation()` gate used after each generation pass,
+- extended refusal phrase matcher to cover "I can't assist with that" variants,
+- added third-pass rescue prompt (`buildManualAdaptationRescuePrompt`) for forced safe educational adaptation,
+- added final explicit error when all passes still fail acceptance criteria.
+
+Reason:
+Bot returned refusal text ("I'm sorry, I can't assist with that.") as draft body in moderation flow.
+
+Impact:
+Refusal-like outputs are now blocked and retried through stricter prompts instead of being passed through as valid drafts.
+
+## Update 135 — 2026-04-13
+
+File: progress.md  
+Lines: 106–108  
+
+Change:
+Logged refusal reproduction, hardening implementation, and post-change build/typecheck verification.
+
+Reason:
+Maintain required traceability for the latest `/upload` reliability fix.
+
+Impact:
+Execution history now captures refusal-hardening safeguards in manual adaptation flow.
+
+## Update 136 — 2026-04-13
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (45-58, 768-792)
+
+Change:
+Replaced terminal `/upload` adaptation hard-fail with deterministic fallback output:
+- when all AI passes remain refusal-like or under-detailed, service now returns cleaned source-based text,
+- added `buildDeterministicManualFallback()` with normalized line formatting and stable "Советы от экспертов:" heading,
+- fallback trims only to computed upper bound to keep output publishable and non-empty.
+
+Reason:
+User-facing flow regressed when model produced repeated refusals; hard-fail path risked blocking moderation delivery.
+
+Impact:
+`/upload` no longer outputs refusal phrases or empty failures in worst-case generation scenarios; it always returns useful source-derived content.
+
+## Update 137 — 2026-04-13
+
+File: progress.md  
+Lines: 109–111  
+
+Change:
+Logged fallback-safeguard implementation and post-change build/typecheck verification.
+
+Reason:
+Maintain required traceability for the refusal-regression mitigation cycle.
+
+Impact:
+Execution log now records deterministic fallback protection for manual adaptation reliability.
+
+## Update 138 — 2026-04-13
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (10-13, 54-66, 388-404)
+
+Change:
+Added Telegram moderation message size protection:
+- introduced message size constants (`TELEGRAM_MAX_MESSAGE_CHARS`, `MODERATION_TEXT_HARD_LIMIT`),
+- replaced direct moderation message concat with `buildModerationMessage()` helper,
+- helper now clips oversized draft text to safe preview length and appends explicit truncation note.
+
+Reason:
+`/upload` flow failed with Telegram API error `400: Bad Request: message is too long` when adapted drafts exceeded Telegram per-message limits.
+
+Impact:
+Moderation delivery no longer crashes on long drafts; full text remains stored in system while Telegram receives safe preview.
+
+## Update 139 — 2026-04-13
+
+File: progress.md  
+Lines: 112–114  
+
+Change:
+Logged Telegram length-limit diagnosis, safeguard implementation, and post-change build/typecheck verification.
+
+Reason:
+Maintain mandatory traceability for latest `/upload` runtime failure fix.
+
+Impact:
+Execution history now includes mitigation for oversized moderation messages.
+
+## Update 140 — 2026-04-13
+
+File: src/main.ts  
+Lines: `src/main.ts` (80-101)
+
+Change:
+Updated startup timeout wrapper to handle Telegram launch exceptions as non-fatal:
+- wrapped startup promise in guarded `.catch(...)` branch,
+- on launch error now logs warning and resolves `false` instead of rejecting bootstrap.
+
+Reason:
+Local runtime crashed on transient Telegram API network error (`ECONNRESET`) before timeout fallback could apply.
+
+Impact:
+Application now continues boot in degraded mode when Telegram startup fails immediately, matching existing timeout-based resilience behavior.
+
+## Update 141 — 2026-04-13
+
+File: progress.md  
+Lines: 115–117  
+
+Change:
+Logged Telegram-start crash diagnosis, non-fatal launch handling implementation, and post-change build/typecheck verification.
+
+Reason:
+Maintain required traceability for startup-resilience fix iteration.
+
+Impact:
+Execution log now captures mitigation for startup failures caused by transient Telegram network errors.
+
+## Update 142 — 2026-04-13
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (11-16, 23-38, 84-95, 473-594)
+
+Change:
+Added Telegraph-backed long-form channel publishing flow:
+- when publish text exceeds direct Telegram threshold, service creates Telegraph page via API,
+- channel post now sends announcement with generated title, benefit statement, CTA, and Telegraph URL,
+- added Telegraph helper functions for account creation, page creation, title/benefit extraction, and announcement rendering.
+
+Reason:
+Telegram single-message length limit prevented full long-form article publication in one readable unit.
+
+Impact:
+Approved long posts can now be published as full external article pages with a click-driving Telegram announcement.
+
+## Update 143 — 2026-04-13
+
+File: src/config/env.ts  
+Lines: `src/config/env.ts` (22-25)
+
+Change:
+Extended environment schema with optional Telegraph config:
+- `TELEGRAPH_ACCESS_TOKEN`
+- `TELEGRAPH_SHORT_NAME`
+
+Reason:
+Telegraph publishing flow requires optional runtime credentials/identity.
+
+Impact:
+Runtime can use fixed Telegraph account token when provided and fallback to dynamic account creation otherwise.
+
+## Update 144 — 2026-04-13
+
+File: .env.example  
+Lines: `.env.example` (18-23)
+
+Change:
+Added sample Telegraph env variables to template:
+- `TELEGRAPH_ACCESS_TOKEN`
+- `TELEGRAPH_SHORT_NAME`
+
+Reason:
+Expose new optional publishing configuration in environment template.
+
+Impact:
+Deployment/local setup docs now cover Telegraph integration knobs.
+
+## Update 145 — 2026-04-13
+
+File: progress.md  
+Lines: 118–120  
+
+Change:
+Logged Telegraph integration implementation and post-change build/typecheck verification.
+
+Reason:
+Maintain required traceability for long-form publishing enhancement.
+
+Impact:
+Execution log now reflects migration path from truncated Telegram posts to click-through long-form article publishing.
+
+## Update 146 — 2026-04-13
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (52-89, 320-334, 412-450)
+
+Change:
+Changed moderation delivery to single-message ready-post mode:
+- removed multi-part moderation preview/chunk splitting,
+- moderation now builds final channel-ready payload first (direct text for short posts, Telegraph announcement for long posts),
+- sends exactly one moderation message with inline actions.
+
+Reason:
+User requested moderation to receive final publish-ready post with Telegraph and CTA, without intermediate `part N` chunks.
+
+Impact:
+Moderators now review one final formatted post per draft, aligned with final publishing format.
+
+## Update 147 — 2026-04-13
+
+File: progress.md  
+Lines: 121–123  
+
+Change:
+Logged moderation flow redesign, unified payload generation, and post-change build/typecheck verification.
+
+Reason:
+Maintain required traceability for moderation UX alignment changes.
+
+Impact:
+Execution history now records the shift to single-message final-post moderation format.
+
+## Update 148 — 2026-04-13
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (10-14, 297-320, 470-512)
+
+Change:
+Hardened PDF download for `/upload` against transient Telegram network failures:
+- added retry + timeout fetch helper (`fetchBufferWithRetry`),
+- added dual-source download strategy (primary `getFileLink`, fallback direct `file_path` URL),
+- moved download logic into `downloadPdfBuffer(fileId)` and replaced inline single-fetch path.
+
+Reason:
+`/upload` intermittently failed with `Failed to process PDF: fetch failed` during file retrieval.
+
+Impact:
+PDF upload flow now tolerates transient Telegram CDN/API fetch errors and is less likely to fail on first network hiccup.
+
+## Update 149 — 2026-04-13
+
+File: progress.md  
+Lines: 124–126  
+
+Change:
+Logged `/upload` fetch-failure diagnosis, resilient download implementation, and post-change build/typecheck verification.
+
+Reason:
+Maintain required traceability for latest upload reliability fix.
+
+Impact:
+Execution history now includes transport-layer resilience improvements for PDF ingestion.
+
+## Update 150 — 2026-04-13
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (530-646)
+
+Change:
+Improved content hygiene and teaser quality for long-form Telegraph announcements:
+- expanded `isPdfNoiseLine()` with navigation/metadata/footer phrase filters (`время чтения`, `похожие статьи`, `поиск по сайту`, etc.),
+- excluded URL/footer/navigation artifacts from teaser extraction,
+- rebuilt `buildClickworthyTitle()` to use cleaned non-navigation candidate lines,
+- updated `extractBenefitSentence()` to derive value statement from filtered content only.
+
+Reason:
+Generated title/preview still contained PDF/site navigation artifacts and irrelevant metadata.
+
+Impact:
+Telegraph announcement titles and “что получите” blocks are cleaner, more readable, and closer to publish-ready quality.
+
+## Update 151 — 2026-04-13
+
+File: progress.md  
+Lines: 127–129  
+
+Change:
+Logged quality diagnosis, noise-filter and teaser-extraction improvements, and post-change build/typecheck verification.
+
+Reason:
+Maintain required traceability for Telegraph copy quality iteration.
+
+Impact:
+Execution history now reflects the cleanup pass targeting noisy titles and preview snippets.
+
+## Update 152 — 2026-04-13
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (31-57, 793-869)
+
+Change:
+Added source-text sanitization before manual adaptation prompting:
+- `adaptManualArticleText()` now runs `sanitizeManualSourceText()` before length planning and prompt generation,
+- sanitizer removes page counters, site breadcrumbs, reading-time/meta blocks, links, and common footer/navigation noise,
+- added line-level noise filter (`isManualNoiseLine`) and whitespace normalization.
+
+Reason:
+Raw PDF/site extraction artifacts were still leaking into final adaptation content and Telegraph pages.
+
+Impact:
+Manual adaptation now receives cleaner source context, reducing navigation/footer contamination in generated post text.
+
+## Update 153 — 2026-04-13
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (575-672)
+
+Change:
+Added topic-aware teaser generation for long-form Telegraph announcements:
+- introduced `inferTopic()` classifier (`training`/`nutrition`/`behavior`/`general`),
+- `buildClickworthyTitle()` and `extractBenefitSentence()` now use stronger predefined hooks for key content domains before fallback heuristics.
+
+Reason:
+Generic teaser text ("Практическая статья...") was not sufficiently clickable and often lacked concrete promised value.
+
+Impact:
+Channel announcements now produce more specific, action-oriented hooks and clearer promised outcomes for readers.
+
+## Update 154 — 2026-04-13
+
+File: progress.md  
+Lines: 130–132  
+
+Change:
+Logged renewed content-quality diagnosis, sanitization/teaser improvements, and post-change build/typecheck verification.
+
+Reason:
+Maintain required traceability for current copy-quality refinement cycle.
+
+Impact:
+Execution history now includes the latest anti-noise and teaser-quality upgrades for `/upload` long-form flow.
+
+## Update 155 — 2026-04-13
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (1-3, 31-95, 686-875)
+
+Change:
+Added iterative quality-control loop for `/upload` adaptation:
+- introduced target score `9/10` and bounded rewrite iterations,
+- added AI-based quality evaluation prompt returning structured JSON (`score`, `issues`, `rewrite_plan`),
+- added automatic improvement prompt loop until target score or max attempts,
+- added parser + heuristic fallback for malformed evaluator responses.
+
+Reason:
+Manual adaptation still produced noisy or weak outputs; user requested repeated evaluate/rewrite cycle before moderation.
+
+Impact:
+Manual uploads now pass through explicit quality gating and iterative rewriting prior to moderator delivery.
+
+## Update 156 — 2026-04-13
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (282-290)
+
+Change:
+Added immediate progress feedback after PDF upload acceptance:
+- bot now replies that processing is in progress before downloading/parsing/generating.
+
+Reason:
+User experience issue: long `/upload` processing looked like Telegram froze.
+
+Impact:
+Users now get explicit “processing” acknowledgment during heavy PDF adaptation runs.
+
+## Update 157 — 2026-04-13
+
+File: progress.md  
+Lines: 133–135  
+
+Change:
+Logged quality-loop implementation, PDF-progress UX message, and post-change build/typecheck verification.
+
+Reason:
+Maintain required traceability for quality-gating and UX-response improvements.
+
+Impact:
+Execution history now captures both the 9/10 rewrite loop and visible upload progress signaling.
+
+## Update 158 — 2026-04-13
+
+File: src/modules/generation/index.ts  
+Lines: `src/modules/generation/index.ts` (130-149, 748-808, 842-853, 879-1137)
+
+Change:
+Hardened `/upload` manual-adaptation quality controls to block noisy/non-finished outputs:
+- added duplicate-fragment collapse in post-normalization (`collapseRepeatedIntroChunk`) to remove repeated intros like `советы и рекомендации советы и рекомендации`,
+- expanded quality-evaluation prompt with explicit checks for repeated fragments, tail date noise, and incomplete endings,
+- expanded rewrite-improvement prompt with explicit cleanup constraints for duplicate fragments and related-articles/date tails,
+- tightened acceptance gate (`isAcceptableManualAdaptation`) to reject candidates containing garbage markers, month-year tail noise, duplicate adjacent fragments, or unfinished endings,
+- added tail pre-trimming in source sanitization (`trimManualTailNoise`) for related-article blocks,
+- added deterministic heuristic scoring penalties (`applyManualQualityHeuristics`) for residual garbage/date tails/duplicate fragments/unfinished endings,
+- added month-year line filter in source cleanup to drop lines like `дек 2024`, `фев 2025`.
+
+Reason:
+Real `/upload` output still leaked footer/related-content artifacts and repeated fragments, while quality loop occasionally passed text with broken endings.
+
+Impact:
+Manual adaptation loop now fails and rewrites these defect classes before moderation, increasing likelihood of publish-ready text continuity and cleaner endings.
+
+## Update 159 — 2026-04-13
+
+File: progress.md  
+Lines: 136-139  
+
+Change:
+Logged new execution steps for:
+- defect reproduction from real `/upload` sample,
+- quality-gate hardening in generation module,
+- post-change typecheck/build verification,
+- attempted live local PDF `/upload` runtime check with documented external network/runtime limitation.
+
+Reason:
+Maintain mandatory atomic traceability for current text-quality stabilization cycle.
+
+Impact:
+Execution log now captures both implemented safeguards and the remaining runtime verification constraint in current environment.
+
+## Update 160 — 2026-04-13
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (289, 383-460 removed, 534+ helper retained for Telegraph title/benefit filtering)
+
+Change:
+Rolled back `/upload` PDF-to-text preprocessing in Telegram document flow:
+- replaced normalized extraction path with direct parser output pass-through (`const articleText = parsed.text?.trim() ?? ''`),
+- removed PDF text normalization function chain that previously transformed extracted text before adaptation,
+- kept lightweight noise-line helper only for Telegraph title/benefit candidate filtering (not for core article extraction).
+
+Reason:
+User requested to temporarily disable PDF preprocessing and compare output quality with baseline extraction behavior.
+
+Impact:
+`/upload` now forwards raw `pdf-parse` text to manual adaptation as before, isolating preprocessing impact from generation-quality diagnostics.
+
+## Update 161 — 2026-04-13
+
+File: progress.md  
+Lines: 140-142  
+
+Change:
+Logged rollback execution steps for PDF preprocessing disablement and post-change verification (`npm run typecheck`, `npm run build`).
+
+Reason:
+Maintain mandatory atomic traceability for user-requested rollback experiment.
+
+Impact:
+Execution history now includes explicit rollback state to support controlled A/B behavior comparison of `/upload` output.

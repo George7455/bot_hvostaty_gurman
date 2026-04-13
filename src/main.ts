@@ -78,8 +78,15 @@ bootstrap().catch((error: unknown) => {
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<boolean> {
   let timeoutHandle: NodeJS.Timeout | null = null;
   try {
+    const guardedPromise = promise
+      .then(() => true)
+      .catch((error: unknown) => {
+        console.warn('Telegram bot start failed; continuing without confirmed startup.', error);
+        return false;
+      });
+
     const result = await Promise.race([
-      promise.then(() => true),
+      guardedPromise,
       new Promise<boolean>((resolve) => {
         timeoutHandle = setTimeout(() => resolve(false), timeoutMs);
       })
