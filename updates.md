@@ -2454,3 +2454,78 @@ Maintain mandatory atomic traceability for user-requested rollback experiment.
 
 Impact:
 Execution history now includes explicit rollback state to support controlled A/B behavior comparison of `/upload` output.
+
+## Update 162 — 2026-04-14
+
+File: src/modules/ai/index.ts, .env.example  
+Lines: `src/modules/ai/index.ts` (6), `.env.example` (16)
+
+Change:
+Updated OpenAI model defaults to `gpt-5.4`:
+- changed runtime fallback constant `DEFAULT_MODEL` from `gpt-4o-mini` to `gpt-5.4`,
+- changed env template default `OPENAI_MODEL` to `gpt-5.4`.
+
+Reason:
+User requested migration to ChatGPT-5.4 across project defaults.
+
+Impact:
+New deployments and env bootstraps now default to `gpt-5.4` unless explicitly overridden.
+
+## Update 163 — 2026-04-14
+
+File: src/modules/telegram/index.ts  
+Lines: `src/modules/telegram/index.ts` (289, 560-643)
+
+Change:
+Restored and strengthened PDF preprocessing before manual adaptation:
+- upload flow now passes `normalizePdfTextForAi(parsed.text ?? '')` into moderation pipeline,
+- added PDF cleanup/flattening stage:
+  - control-character cleanup,
+  - hyphen-wrap joining (`дресси-\nровка` => `дрессировка`),
+  - removal of navigation/footer/date lines and page counters,
+  - adjacent-duplicate line suppression,
+  - hard-wrap flattening to sentence-friendly text.
+
+Reason:
+Raw parser output produced article text with line-wrap artifacts, duplicated headings, and service blocks leaking into final `/upload` result.
+
+Impact:
+Manual adaptation receives cleaner source text and is less likely to emit raw PDF-layout fragments.
+
+## Update 164 — 2026-04-14
+
+File: src/modules/generation/index.ts, progress.md  
+Lines: `src/modules/generation/index.ts` (606-611, 765-775, 802-811, 855-863, 1092-1174), `progress.md` (143-146)
+
+Change:
+Hardened `/upload` adaptation prompt and quality gate for raw PDF-layout rejection:
+- prompt now explicitly requires removing PDF artifacts, duplicate headings, and broken in-sentence line wraps,
+- quality evaluation prompt now includes raw-layout criterion,
+- improvement prompt now explicitly demands conversion from scan-like fragments to coherent narrative flow,
+- acceptance gate now rejects texts with `hasRawPdfLayoutArtifacts(...)`,
+- heuristic quality scoring now applies explicit penalty when raw-layout signature is detected.
+Also logged execution steps and verification in `progress.md`.
+
+Reason:
+User-provided output still contained low-quality PDF extraction structure (fragmented short lines, heading cascades, duplicated title sections).
+
+Impact:
+Quality loop now blocks and rewrites this defect class before moderation handoff; compile integrity re-validated (`npm run typecheck`, `npm run build`).
+
+## Update 165 — 2026-04-14
+
+File: src/modules/ai/index.ts, .env.example, .env, progress.md  
+Lines: `src/modules/ai/index.ts` (6), `.env.example` (16), `.env` (`OPENAI_MODEL` line), `progress.md` (147-148)
+
+Change:
+Replaced model identifiers with `gpt-5.4-mini` across default/runtime configuration:
+- updated AI runtime fallback constant `DEFAULT_MODEL` to `gpt-5.4-mini`,
+- updated environment template default `OPENAI_MODEL=gpt-5.4-mini`,
+- updated active local environment model value to `OPENAI_MODEL=gpt-5.4-mini`,
+- logged execution/verification steps in `progress.md`.
+
+Reason:
+User requested switching model everywhere to ChatGPT 5.4 mini.
+
+Impact:
+All default and active local model configuration paths now resolve to `gpt-5.4-mini`; compile integrity confirmed via `npm run typecheck` and `npm run build`.

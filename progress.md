@@ -140,3 +140,9 @@
 [✓] Step 140 — Rolled back `/upload` PDF-to-text pre-normalization in Telegram document handler and restored direct `pdf-parse` text pass-through (`parsed.text?.trim()`).
 [✓] Step 141 — Removed PDF text normalization pipeline helpers from Telegram module (`normalizePdfTextForAi` + old noise-line prefilter usage in extraction path).
 [✓] Step 142 — Re-validated compile integrity after PDF preprocessing rollback (`npm run typecheck`, `npm run build` passed).
+[✓] Step 143 — Updated AI model defaults to `gpt-5.4` in runtime fallback and env template (`src/modules/ai/index.ts`, `.env.example`).
+[✓] Step 144 — Restored and strengthened PDF-to-text preprocessing in Telegram upload flow (line-wrap flattening, duplicate-line suppression, noise-line removal) before manual adaptation.
+[✓] Step 145 — Tightened `/upload` adaptation prompt and quality gate to reject raw PDF-layout artifacts and enforce cohesive article-style output.
+[✓] Step 146 — Re-validated compile integrity after model/default + PDF preprocessing + prompt-quality updates (`npm run typecheck`, `npm run build` passed).
+[✓] Step 147 — Switched model identifiers to `gpt-5.4-mini` in runtime default, env template, and active local env (`src/modules/ai/index.ts`, `.env.example`, `.env`).
+[✓] Step 148 — Re-validated compile integrity after model switch to `gpt-5.4-mini` (`npm run typecheck`, `npm run build` passed).
