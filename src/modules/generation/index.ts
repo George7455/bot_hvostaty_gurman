@@ -1,6 +1,9 @@
 const TEMPORARY_PROMPT_NOTE = 'TEMPORARY_PROMPT_V1';
 const MANUAL_QUALITY_TARGET_SCORE = 9;
 const MANUAL_QUALITY_MAX_REWRITES = 3;
+const MANUAL_FINAL_EDITORIAL_PASSES = 2;
+const MANUAL_MAX_SHINGLE_OVERLAP = 0.68;
+const MANUAL_MAX_SENTENCE_REUSE = 0.4;
 
 export interface InitialDraftGenerationInput {
   topic: string;
@@ -33,7 +36,9 @@ export class GenerationService implements GenerationModule {
   public async adaptManualArticleText(articleText: string): Promise<string> {
     const sourceText = sanitizeManualSourceText(articleText);
     const lengthRange = resolveManualAdaptationLengthRange(sourceText);
-    let candidate = await this.generateBaseManualCandidate(sourceText, lengthRange);
+    let candidate = normalizeManualCandidateText(
+      await this.generateBaseManualCandidate(sourceText, lengthRange)
+    );
     let bestCandidate = candidate;
     let bestScore = 0;
 
@@ -44,7 +49,10 @@ export class GenerationService implements GenerationModule {
         bestCandidate = candidate;
       }
 
-      if (quality.score >= MANUAL_QUALITY_TARGET_SCORE) {
+      if (
+        quality.score >= MANUAL_QUALITY_TARGET_SCORE &&
+        isAcceptableManualAdaptation(sourceText, candidate, lengthRange)
+      ) {
         return candidate;
       }
 
@@ -58,17 +66,24 @@ export class GenerationService implements GenerationModule {
         quality,
         lengthRange
       );
-      candidate = await this.generateNonEmpty(improvePrompt);
-      if (!isAcceptableManualAdaptation(candidate, lengthRange)) {
-        candidate = await this.generateBaseManualCandidate(sourceText, lengthRange);
+      candidate = normalizeManualCandidateText(await this.generateNonEmpty(improvePrompt));
+      if (!isAcceptableManualAdaptation(sourceText, candidate, lengthRange)) {
+        candidate = normalizeManualCandidateText(
+          await this.generateBaseManualCandidate(sourceText, lengthRange)
+        );
       }
     }
 
-    if (bestScore >= 7) {
+    const finalEdited = await this.runFinalEditorialPass(sourceText, bestCandidate, lengthRange);
+    if (isAcceptableManualAdaptation(sourceText, finalEdited, lengthRange)) {
+      return finalEdited;
+    }
+
+    if (bestScore >= 7 && isAcceptableManualAdaptation(sourceText, bestCandidate, lengthRange)) {
       return bestCandidate;
     }
 
-    return buildDeterministicManualFallback(sourceText, lengthRange);
+    throw new Error('Manual article adaptation did not reach publish-ready quality.');
   }
 
   private async generateNonEmpty(prompt: string): Promise<string> {
@@ -85,9 +100,9 @@ export class GenerationService implements GenerationModule {
     lengthRange: { minLength: number; maxLength: number }
   ): Promise<string> {
     const prompt = buildTemporaryManualAdaptationPrompt(sourceText, lengthRange);
-    const firstAttempt = await this.generateNonEmpty(prompt);
+    const firstAttempt = normalizeManualCandidateText(await this.generateNonEmpty(prompt));
 
-    if (isAcceptableManualAdaptation(firstAttempt, lengthRange)) {
+    if (isAcceptableManualAdaptation(sourceText, firstAttempt, lengthRange)) {
       return firstAttempt;
     }
 
@@ -97,17 +112,39 @@ export class GenerationService implements GenerationModule {
       lengthRange
     );
     const secondAttempt = await this.generateNonEmpty(expansionPrompt);
-    if (isAcceptableManualAdaptation(secondAttempt, lengthRange)) {
-      return secondAttempt;
+    const normalizedSecondAttempt = normalizeManualCandidateText(secondAttempt);
+    if (isAcceptableManualAdaptation(sourceText, normalizedSecondAttempt, lengthRange)) {
+      return normalizedSecondAttempt;
     }
 
-    const rescuePrompt = buildManualAdaptationRescuePrompt(sourceText, secondAttempt, lengthRange);
-    const thirdAttempt = await this.generateNonEmpty(rescuePrompt);
-    if (isAcceptableManualAdaptation(thirdAttempt, lengthRange)) {
+    const rescuePrompt = buildManualAdaptationRescuePrompt(
+      sourceText,
+      normalizedSecondAttempt,
+      lengthRange
+    );
+    const thirdAttempt = normalizeManualCandidateText(await this.generateNonEmpty(rescuePrompt));
+    if (isAcceptableManualAdaptation(sourceText, thirdAttempt, lengthRange)) {
       return thirdAttempt;
     }
 
-    return buildDeterministicManualFallback(sourceText, lengthRange);
+    return thirdAttempt;
+  }
+
+  private async runFinalEditorialPass(
+    sourceText: string,
+    candidateText: string,
+    lengthRange: { minLength: number; maxLength: number }
+  ): Promise<string> {
+    let candidate = candidateText;
+    for (let attempt = 0; attempt < MANUAL_FINAL_EDITORIAL_PASSES; attempt += 1) {
+      const prompt = buildManualFinalEditorialPrompt(sourceText, candidate, lengthRange);
+      candidate = normalizeManualCandidateText(await this.generateNonEmpty(prompt));
+      if (isAcceptableManualAdaptation(sourceText, candidate, lengthRange)) {
+        return candidate;
+      }
+    }
+
+    return candidate;
   }
 
   private async evaluateManualQuality(
@@ -117,7 +154,7 @@ export class GenerationService implements GenerationModule {
   ): Promise<ManualQualityAssessment> {
     const prompt = buildManualQualityEvaluationPrompt(sourceText, candidateText, lengthRange);
     const raw = await this.ai.complete(prompt);
-    return parseManualQualityAssessment(raw, candidateText, lengthRange);
+    return parseManualQualityAssessment(raw, sourceText, candidateText, lengthRange);
   }
 }
 
@@ -772,6 +809,8 @@ function buildManualQualityEvaluationPrompt(
     '7) Текст заканчивается завершенной мыслью, без оборванной концовки.',
     '8) Нет хвостовых дат/мусора вида "дек 2024", "фев 2025".',
     '9) Нет сырой PDF-верстки: десятков коротких обрывочных строк и заголовков-перечней подряд.',
+    '10) Текст не является почти дословной копией исходника (обязательна редакторская переработка).',
+    '11) Нет мета-маркеров вроде "Авторы", "Введение", email-адресов и числовых карточек чтения.',
     '',
     'Верни только JSON без комментариев в формате:',
     '{"score": 0-10, "issues": ["..."], "rewrite_plan": "..."}',
@@ -808,12 +847,40 @@ function buildManualQualityImprovementPrompt(
     '— убрать хвостовые даты и карточки похожих материалов;',
     '— убрать вид "сырого PDF" (обрывочные короткие строки и каскад заголовков);',
     '— восстановить связное последовательное повествование;',
+    '— убрать мета-слова ("Авторы", "Введение"), email и технические счетчики;',
+    '— не копировать исходник дословно: нужна полноценная редакторская переработка;',
     '— без markdown, без отказных фраз, без воды.',
     '',
     'ИСХОДНИК:',
     sourceText,
     '',
     'ТЕКУЩИЙ ТЕКСТ:',
+    candidateText
+  ].join('\n');
+}
+
+function buildManualFinalEditorialPrompt(
+  sourceText: string,
+  candidateText: string,
+  lengthRange: { minLength: number; maxLength: number }
+): string {
+  return [
+    'Сделай финальную редакторскую полировку текста перед публикацией в Telegram.',
+    `Диапазон объема: ${lengthRange.minLength}-${lengthRange.maxLength} символов.`,
+    '',
+    'Критично важно:',
+    '— убрать остатки PDF/сайта: "Авторы", "Введение", время чтения, даты карточек, email, теги;',
+    '— убрать повторы и дубли фраз;',
+    '— собрать материал в последовательный, цельный, легко читаемый пост;',
+    '— закончить текст завершенной мыслью;',
+    '— не быть дословной копией исходника;',
+    '— сохранить практические факты и ограничения исходника;',
+    '— без markdown и без служебных комментариев.',
+    '',
+    'ИСХОДНЫЙ ТЕКСТ:',
+    sourceText,
+    '',
+    'ТЕКУЩИЙ ЧЕРНОВИК:',
     candidateText
   ].join('\n');
 }
@@ -850,6 +917,7 @@ function looksLikeModelRefusal(text: string): boolean {
 }
 
 function isAcceptableManualAdaptation(
+  sourceText: string,
   text: string,
   lengthRange: { minLength: number; maxLength: number }
 ): boolean {
@@ -860,31 +928,10 @@ function isAcceptableManualAdaptation(
     !containsDateTailNoise(text) &&
     !hasDuplicateAdjacentFragments(text) &&
     !endsWithIncompleteThought(text) &&
-    !hasRawPdfLayoutArtifacts(text)
+    !hasRawPdfLayoutArtifacts(text) &&
+    !hasResidualMetadataMarkers(text) &&
+    !hasExcessiveSourceOverlap(sourceText, text)
   );
-}
-
-function buildDeterministicManualFallback(
-  articleText: string,
-  lengthRange: { minLength: number; maxLength: number }
-): string {
-  const cleaned = articleText
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .join('\n');
-
-  const withTitle = cleaned.startsWith('Советы от экспертов:')
-    ? cleaned
-    : `Советы от экспертов:\n${cleaned}`;
-
-  if (withTitle.length < lengthRange.minLength) {
-    return `${withTitle}\n\nПрактический вывод: выбирайте формат занятий по темпераменту собаки, своему ритму жизни и требованиям конкретной дисциплины.`;
-  }
-
-  return withTitle;
 }
 
 function sanitizeManualSourceText(articleText: string): string {
@@ -939,7 +986,9 @@ function isManualNoiseLine(line: string): boolean {
     'бесплатная горячая линия',
     'написать нам',
     'время чтения',
-    'используемая литература'
+    'используемая литература',
+    'авторы',
+    'введение'
   ];
 
   return stopPhrases.some((phrase) => normalized.includes(phrase));
@@ -947,12 +996,13 @@ function isManualNoiseLine(line: string): boolean {
 
 function parseManualQualityAssessment(
   raw: string,
+  sourceText: string,
   candidateText: string,
   lengthRange: { minLength: number; maxLength: number }
 ): ManualQualityAssessment {
   const parsed = tryParseQualityJson(raw);
   if (parsed) {
-    return applyManualQualityHeuristics(parsed, candidateText, lengthRange);
+    return applyManualQualityHeuristics(parsed, sourceText, candidateText, lengthRange);
   }
 
   let score = 8;
@@ -968,7 +1018,7 @@ function parseManualQualityAssessment(
     score,
     issues: ['Авто-оценка сработала по эвристике: верни чище и практичнее.'],
     rewritePlan: 'Убери шум, усили практичность, сохрани структуру и ограничения.'
-  }, candidateText, lengthRange);
+  }, sourceText, candidateText, lengthRange);
 }
 
 function tryParseQualityJson(raw: string): ManualQualityAssessment | null {
@@ -1014,7 +1064,10 @@ function containsManualGarbage(text: string): boolean {
     'главная заводчикам',
     'используемая литература',
     'читать полностью:',
-    '-- 1 of'
+    '-- 1 of',
+    'contact.ru@',
+    'авторы',
+    'введение'
   ];
 
   return markers.some((marker) => normalized.includes(marker));
@@ -1091,6 +1144,7 @@ function endsWithIncompleteThought(text: string): boolean {
 
 function applyManualQualityHeuristics(
   assessment: ManualQualityAssessment,
+  sourceText: string,
   candidateText: string,
   lengthRange: { minLength: number; maxLength: number }
 ): ManualQualityAssessment {
@@ -1127,12 +1181,189 @@ function applyManualQualityHeuristics(
     issues.push('Текст выглядит как сырой PDF-выгрузка (короткие рваные строки/каскад заголовков).');
   }
 
+  if (hasResidualMetadataMarkers(candidateText)) {
+    score = Math.min(score, 5);
+    issues.push('Остались мета-маркеры (Авторы/Введение/email/счетчики чтения).');
+  }
+
+  if (hasExcessiveSourceOverlap(sourceText, candidateText)) {
+    score = Math.min(score, 5);
+    issues.push('Текст слишком близок к исходнику и выглядит как копипаст.');
+  }
+
   const dedupedIssues = Array.from(new Set(issues));
   return {
     score,
     issues: dedupedIssues,
     rewritePlan: assessment.rewritePlan
   };
+}
+
+function normalizeManualCandidateText(text: string): string {
+  let normalized = text
+    .split('\n')
+    .map((line) => collapseRepeatedIntroChunk(line.trim()))
+    .filter((line) => line.length > 0)
+    .filter((line) => !isManualNoiseLine(line))
+    .filter((line) => !isManualMetadataLine(line))
+    .join('\n');
+
+  normalized = normalized
+    .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, ' ')
+    .replace(/\b\d+\s*мин(ут[аы]?)?\b/gi, ' ')
+    .replace(/\b(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}\b/gi, ' ')
+    .replace(/\b\d{1,2}\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\b\.?/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/(?:\n\s*){3,}/g, '\n\n')
+    .trim();
+
+  return dedupeConsecutiveLines(normalized);
+}
+
+function dedupeConsecutiveLines(text: string): string {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  const result: string[] = [];
+  for (const line of lines) {
+    if (result.at(-1)?.toLowerCase() === line.toLowerCase()) {
+      continue;
+    }
+    result.push(line);
+  }
+
+  return result.join('\n').trim();
+}
+
+function isManualMetadataLine(line: string): boolean {
+  const normalized = line.toLowerCase().trim();
+  if (
+    normalized === 'авторы' ||
+    normalized === 'введение' ||
+    normalized === 'оглавление'
+  ) {
+    return true;
+  }
+
+  if (/^\d+\s*мин(ут[аы]?)?$/i.test(normalized)) {
+    return true;
+  }
+
+  if (/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
+function hasResidualMetadataMarkers(text: string): boolean {
+  const normalized = text.toLowerCase();
+  if (
+    /\bавторы\b/i.test(normalized) ||
+    /\bвведение\b/i.test(normalized) ||
+    /\b\d+\s*мин(ут[аы]?)?\b/i.test(normalized) ||
+    /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(text)
+  ) {
+    return true;
+  }
+
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  return lines.some((line) => {
+    const tokens = line
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((token) => token.length > 0);
+    if (tokens.length < 7) {
+      return false;
+    }
+
+    const isLikelyTagCloud = !/[.!?;:]/.test(line) && tokens.every((token) => token.length <= 14);
+    const hasDogTags =
+      /(собак|щенок|уход|здоров|развит|адаптац|дрессиров|тест)/i.test(line);
+    return isLikelyTagCloud && hasDogTags;
+  });
+}
+
+function hasExcessiveSourceOverlap(sourceText: string, candidateText: string): boolean {
+  const shingleOverlap = calculateShingleContainment(sourceText, candidateText, 8);
+  if (shingleOverlap >= MANUAL_MAX_SHINGLE_OVERLAP) {
+    return true;
+  }
+
+  const sentenceReuse = calculateSentenceReuseRatio(sourceText, candidateText);
+  return sentenceReuse >= MANUAL_MAX_SENTENCE_REUSE;
+}
+
+function calculateShingleContainment(sourceText: string, candidateText: string, size: number): number {
+  const sourceTokens = tokenizeForOverlap(sourceText);
+  const candidateTokens = tokenizeForOverlap(candidateText);
+  const sourceShingles = buildShingleSet(sourceTokens, size);
+  const candidateShingles = buildShingleSet(candidateTokens, size);
+
+  if (candidateShingles.size === 0 || sourceShingles.size === 0) {
+    return 0;
+  }
+
+  let matched = 0;
+  for (const shingle of candidateShingles) {
+    if (sourceShingles.has(shingle)) {
+      matched += 1;
+    }
+  }
+
+  return matched / candidateShingles.size;
+}
+
+function calculateSentenceReuseRatio(sourceText: string, candidateText: string): number {
+  const normalizedSource = normalizeOverlapText(sourceText);
+  if (normalizedSource.length === 0) {
+    return 0;
+  }
+
+  const candidateSentences = candidateText
+    .split(/[.!?…]+/)
+    .map((sentence) => normalizeOverlapText(sentence))
+    .filter((sentence) => sentence.length >= 35);
+
+  if (candidateSentences.length === 0) {
+    return 0;
+  }
+
+  const reused = candidateSentences.filter((sentence) => normalizedSource.includes(sentence)).length;
+  return reused / candidateSentences.length;
+}
+
+function tokenizeForOverlap(text: string): string[] {
+  return normalizeOverlapText(text)
+    .split(' ')
+    .filter((token) => token.length >= 3);
+}
+
+function buildShingleSet(tokens: string[], size: number): Set<string> {
+  const shingles = new Set<string>();
+  if (tokens.length < size) {
+    return shingles;
+  }
+
+  for (let index = 0; index + size <= tokens.length; index += 1) {
+    shingles.add(tokens.slice(index, index + size).join(' '));
+  }
+
+  return shingles;
+}
+
+function normalizeOverlapText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function collapseRepeatedIntroChunk(line: string): string {
