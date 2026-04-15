@@ -4,6 +4,7 @@ const MANUAL_QUALITY_MAX_REWRITES = 3;
 const MANUAL_FINAL_EDITORIAL_PASSES = 2;
 const MANUAL_MAX_SHINGLE_OVERLAP = 0.68;
 const MANUAL_MAX_SENTENCE_REUSE = 0.4;
+const MANUAL_MIN_COVERAGE_RATIO = 0.78;
 
 export interface InitialDraftGenerationInput {
   topic: string;
@@ -36,14 +37,15 @@ export class GenerationService implements GenerationModule {
   public async adaptManualArticleText(articleText: string): Promise<string> {
     const sourceText = sanitizeManualSourceText(articleText);
     const lengthRange = resolveManualAdaptationLengthRange(sourceText);
+    const coveragePlan = await this.extractManualCoveragePlan(sourceText);
     let candidate = normalizeManualCandidateText(
-      await this.generateBaseManualCandidate(sourceText, lengthRange)
+      await this.generateBaseManualCandidate(sourceText, lengthRange, coveragePlan)
     );
     let bestCandidate = candidate;
     let bestScore = 0;
 
     for (let attempt = 0; attempt <= MANUAL_QUALITY_MAX_REWRITES; attempt += 1) {
-      const quality = await this.evaluateManualQuality(sourceText, candidate, lengthRange);
+      const quality = await this.evaluateManualQuality(sourceText, candidate, lengthRange, coveragePlan);
       if (quality.score > bestScore) {
         bestScore = quality.score;
         bestCandidate = candidate;
@@ -51,7 +53,7 @@ export class GenerationService implements GenerationModule {
 
       if (
         quality.score >= MANUAL_QUALITY_TARGET_SCORE &&
-        isAcceptableManualAdaptation(sourceText, candidate, lengthRange)
+        isAcceptableManualAdaptation(sourceText, candidate, lengthRange, coveragePlan)
       ) {
         return candidate;
       }
@@ -64,22 +66,28 @@ export class GenerationService implements GenerationModule {
         sourceText,
         candidate,
         quality,
-        lengthRange
+        lengthRange,
+        coveragePlan
       );
       candidate = normalizeManualCandidateText(await this.generateNonEmpty(improvePrompt));
-      if (!isAcceptableManualAdaptation(sourceText, candidate, lengthRange)) {
+      if (!isAcceptableManualAdaptation(sourceText, candidate, lengthRange, coveragePlan)) {
         candidate = normalizeManualCandidateText(
-          await this.generateBaseManualCandidate(sourceText, lengthRange)
+          await this.generateBaseManualCandidate(sourceText, lengthRange, coveragePlan)
         );
       }
     }
 
-    const finalEdited = await this.runFinalEditorialPass(sourceText, bestCandidate, lengthRange);
-    if (isAcceptableManualAdaptation(sourceText, finalEdited, lengthRange)) {
+    const finalEdited = await this.runFinalEditorialPass(
+      sourceText,
+      bestCandidate,
+      lengthRange,
+      coveragePlan
+    );
+    if (isAcceptableManualAdaptation(sourceText, finalEdited, lengthRange, coveragePlan)) {
       return finalEdited;
     }
 
-    if (bestScore >= 7 && isAcceptableManualAdaptation(sourceText, bestCandidate, lengthRange)) {
+    if (bestScore >= 7 && isAcceptableManualAdaptation(sourceText, bestCandidate, lengthRange, coveragePlan)) {
       return bestCandidate;
     }
 
@@ -97,33 +105,36 @@ export class GenerationService implements GenerationModule {
 
   private async generateBaseManualCandidate(
     sourceText: string,
-    lengthRange: { minLength: number; maxLength: number }
+    lengthRange: { minLength: number; maxLength: number },
+    coveragePlan: ManualCoveragePlan
   ): Promise<string> {
-    const prompt = buildTemporaryManualAdaptationPrompt(sourceText, lengthRange);
+    const prompt = buildTemporaryManualAdaptationPrompt(sourceText, lengthRange, coveragePlan);
     const firstAttempt = normalizeManualCandidateText(await this.generateNonEmpty(prompt));
 
-    if (isAcceptableManualAdaptation(sourceText, firstAttempt, lengthRange)) {
+    if (isAcceptableManualAdaptation(sourceText, firstAttempt, lengthRange, coveragePlan)) {
       return firstAttempt;
     }
 
     const expansionPrompt = buildManualAdaptationExpansionPrompt(
       sourceText,
       firstAttempt,
-      lengthRange
+      lengthRange,
+      coveragePlan
     );
     const secondAttempt = await this.generateNonEmpty(expansionPrompt);
     const normalizedSecondAttempt = normalizeManualCandidateText(secondAttempt);
-    if (isAcceptableManualAdaptation(sourceText, normalizedSecondAttempt, lengthRange)) {
+    if (isAcceptableManualAdaptation(sourceText, normalizedSecondAttempt, lengthRange, coveragePlan)) {
       return normalizedSecondAttempt;
     }
 
     const rescuePrompt = buildManualAdaptationRescuePrompt(
       sourceText,
       normalizedSecondAttempt,
-      lengthRange
+      lengthRange,
+      coveragePlan
     );
     const thirdAttempt = normalizeManualCandidateText(await this.generateNonEmpty(rescuePrompt));
-    if (isAcceptableManualAdaptation(sourceText, thirdAttempt, lengthRange)) {
+    if (isAcceptableManualAdaptation(sourceText, thirdAttempt, lengthRange, coveragePlan)) {
       return thirdAttempt;
     }
 
@@ -133,13 +144,14 @@ export class GenerationService implements GenerationModule {
   private async runFinalEditorialPass(
     sourceText: string,
     candidateText: string,
-    lengthRange: { minLength: number; maxLength: number }
+    lengthRange: { minLength: number; maxLength: number },
+    coveragePlan: ManualCoveragePlan
   ): Promise<string> {
     let candidate = candidateText;
     for (let attempt = 0; attempt < MANUAL_FINAL_EDITORIAL_PASSES; attempt += 1) {
-      const prompt = buildManualFinalEditorialPrompt(sourceText, candidate, lengthRange);
+      const prompt = buildManualFinalEditorialPrompt(sourceText, candidate, lengthRange, coveragePlan);
       candidate = normalizeManualCandidateText(await this.generateNonEmpty(prompt));
-      if (isAcceptableManualAdaptation(sourceText, candidate, lengthRange)) {
+      if (isAcceptableManualAdaptation(sourceText, candidate, lengthRange, coveragePlan)) {
         return candidate;
       }
     }
@@ -147,14 +159,34 @@ export class GenerationService implements GenerationModule {
     return candidate;
   }
 
+  private async extractManualCoveragePlan(sourceText: string): Promise<ManualCoveragePlan> {
+    const extractedBySource = extractMandatoryCoverageItemsFromSource(sourceText);
+    const prompt = buildManualCoveragePlanPrompt(sourceText, extractedBySource);
+    const raw = await this.ai.complete(prompt);
+    const parsed = parseManualCoveragePlan(raw);
+    const mergedItems = mergeMandatoryCoverageItems(parsed.mandatoryItems, extractedBySource);
+
+    return {
+      title: parsed.title,
+      mandatoryItems: mergedItems,
+      keyRestrictions: parsed.keyRestrictions
+    };
+  }
+
   private async evaluateManualQuality(
     sourceText: string,
     candidateText: string,
-    lengthRange: { minLength: number; maxLength: number }
+    lengthRange: { minLength: number; maxLength: number },
+    coveragePlan: ManualCoveragePlan
   ): Promise<ManualQualityAssessment> {
-    const prompt = buildManualQualityEvaluationPrompt(sourceText, candidateText, lengthRange);
+    const prompt = buildManualQualityEvaluationPrompt(
+      sourceText,
+      candidateText,
+      lengthRange,
+      coveragePlan
+    );
     const raw = await this.ai.complete(prompt);
-    return parseManualQualityAssessment(raw, sourceText, candidateText, lengthRange);
+    return parseManualQualityAssessment(raw, sourceText, candidateText, lengthRange, coveragePlan);
   }
 }
 
@@ -162,6 +194,12 @@ interface ManualQualityAssessment {
   score: number;
   issues: string[];
   rewritePlan: string;
+}
+
+interface ManualCoveragePlan {
+  title: string;
+  mandatoryItems: string[];
+  keyRestrictions: string[];
 }
 
 function normalizeGeneratedText(text: string): string {
@@ -597,8 +635,12 @@ function buildTemporaryRewritePrompt(previousDraftText: string, notes?: string):
 
 function buildTemporaryManualAdaptationPrompt(
   articleText: string,
-  lengthRange: { minLength: number; maxLength: number }
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
 ): string {
+  const coverageItems = coveragePlan.mandatoryItems.slice(0, 22);
+  const restrictions = coveragePlan.keyRestrictions.slice(0, 10);
+
   return [
     'SYSTEM PROMPT',
     '',
@@ -713,6 +755,19 @@ function buildTemporaryManualAdaptationPrompt(
     '',
     'Если что-то потеряно — перепиши до исправления.',
     '',
+    'ОБЯЗАТЕЛЬНОЕ ПОКРЫТИЕ СМЫСЛА ИСХОДНИКА',
+    'Ниже перечислены обязательные пункты, каждый из которых должен быть отражен в тексте (не обязательно отдельным заголовком, но явно по смыслу):',
+    ...coverageItems.map((item, index) => `${index + 1}. ${item}`),
+    ...(restrictions.length > 0
+      ? [
+          '',
+          'Также сохрани важные ограничения/условия:',
+          ...restrictions.map((item, index) => `${index + 1}. ${item}`)
+        ]
+      : []),
+    '',
+    'Если не уверен — расширяй и дополняй на основе исходника, а не сокращай.',
+    '',
     'ФОРМАТ ОТВЕТА',
     '',
     'Верни только готовый текст поста.',
@@ -733,11 +788,13 @@ function buildTemporaryManualAdaptationPrompt(
 function buildManualAdaptationExpansionPrompt(
   articleText: string,
   firstAttempt: string,
-  lengthRange: { minLength: number; maxLength: number }
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
 ): string {
   const refusalNote = looksLikeModelRefusal(firstAttempt)
     ? 'Первый вариант содержит отказную фразу вместо полезного текста. Это недопустимо.'
     : 'Первый вариант получился слишком коротким.';
+  const coverageItems = coveragePlan.mandatoryItems.slice(0, 20);
 
   return [
     'ПЕРЕПИШИ АДАПТАЦИЮ.',
@@ -749,10 +806,14 @@ function buildManualAdaptationExpansionPrompt(
     '— сохрани весь важный практический материал;',
     '— сохрани ограничения, условия, допуски, возраст/вес/этапность;',
     '— не сжимай перечни дисциплин в общие фразы;',
+    '— обязательно покрой все важные пункты исходника из списка ниже;',
     '— сделай полезный развернутый экспертный текст в Telegram-формате;',
     '— без markdown;',
     '— без пустых бессодержательных абзацев;',
     '— без выдумок.',
+    '',
+    'ОБЯЗАТЕЛЬНЫЕ ПУНКТЫ ПОКРЫТИЯ:',
+    ...coverageItems.map((item, index) => `${index + 1}. ${item}`),
     '',
     'ПЕРВЫЙ (СЛИШКОМ КОРОТКИЙ) ВАРИАНТ:',
     firstAttempt,
@@ -765,8 +826,11 @@ function buildManualAdaptationExpansionPrompt(
 function buildManualAdaptationRescuePrompt(
   articleText: string,
   previousAttempt: string,
-  lengthRange: { minLength: number; maxLength: number }
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
 ): string {
+  const coverageItems = coveragePlan.mandatoryItems.slice(0, 20);
+
   return [
     'ЭТО БЕЗОПАСНЫЙ ЗАПРОС НА РЕДАКТУРУ КИНОЛОГИЧЕСКОГО ТЕКСТА.',
     'Нужна только адаптация исходного материала в полезный Telegram-формат.',
@@ -776,10 +840,14 @@ function buildManualAdaptationRescuePrompt(
     'Обязательные требования:',
     '— подробный и практический стиль;',
     '— сохранить все важные блоки и ограничения из исходника;',
+    '— обязательно покрыть каждый обязательный пункт из списка ниже;',
     '— не придумывать новые факты;',
     '— не сворачивать длинные перечни в общие слова;',
     '— без markdown;',
     '— только готовый текст поста.',
+    '',
+    'ОБЯЗАТЕЛЬНЫЕ ПУНКТЫ ПОКРЫТИЯ:',
+    ...coverageItems.map((item, index) => `${index + 1}. ${item}`),
     '',
     'ПРЕДЫДУЩИЙ НЕУДАЧНЫЙ ВАРИАНТ:',
     previousAttempt,
@@ -792,8 +860,11 @@ function buildManualAdaptationRescuePrompt(
 function buildManualQualityEvaluationPrompt(
   sourceText: string,
   candidateText: string,
-  lengthRange: { minLength: number; maxLength: number }
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
 ): string {
+  const coverageItems = coveragePlan.mandatoryItems.slice(0, 22);
+
   return [
     'Оцени качество адаптации для Telegram-поста про собак.',
     `Целевой балл: ${MANUAL_QUALITY_TARGET_SCORE}/10.`,
@@ -811,9 +882,13 @@ function buildManualQualityEvaluationPrompt(
     '9) Нет сырой PDF-верстки: десятков коротких обрывочных строк и заголовков-перечней подряд.',
     '10) Текст не является почти дословной копией исходника (обязательна редакторская переработка).',
     '11) Нет мета-маркеров вроде "Авторы", "Введение", email-адресов и числовых карточек чтения.',
+    '12) Покрыты обязательные пункты содержания из списка ниже (не менее 78%).',
     '',
     'Верни только JSON без комментариев в формате:',
     '{"score": 0-10, "issues": ["..."], "rewrite_plan": "..."}',
+    '',
+    'ОБЯЗАТЕЛЬНЫЕ ПУНКТЫ ПОКРЫТИЯ:',
+    ...coverageItems.map((item, index) => `${index + 1}. ${item}`),
     '',
     'ИСХОДНИК:',
     sourceText,
@@ -827,9 +902,12 @@ function buildManualQualityImprovementPrompt(
   sourceText: string,
   candidateText: string,
   quality: ManualQualityAssessment,
-  lengthRange: { minLength: number; maxLength: number }
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
 ): string {
   const issues = quality.issues.length > 0 ? quality.issues.join('; ') : 'критичных замечаний не указано';
+  const coverageItems = coveragePlan.mandatoryItems.slice(0, 22);
+
   return [
     'Перепиши текст и улучши качество до 9/10.',
     `Текущая оценка: ${quality.score}/10.`,
@@ -849,7 +927,11 @@ function buildManualQualityImprovementPrompt(
     '— восстановить связное последовательное повествование;',
     '— убрать мета-слова ("Авторы", "Введение"), email и технические счетчики;',
     '— не копировать исходник дословно: нужна полноценная редакторская переработка;',
+    '— включить все обязательные пункты из списка покрытия (не меньше 78%);',
     '— без markdown, без отказных фраз, без воды.',
+    '',
+    'ОБЯЗАТЕЛЬНЫЕ ПУНКТЫ ПОКРЫТИЯ:',
+    ...coverageItems.map((item, index) => `${index + 1}. ${item}`),
     '',
     'ИСХОДНИК:',
     sourceText,
@@ -862,8 +944,11 @@ function buildManualQualityImprovementPrompt(
 function buildManualFinalEditorialPrompt(
   sourceText: string,
   candidateText: string,
-  lengthRange: { minLength: number; maxLength: number }
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
 ): string {
+  const coverageItems = coveragePlan.mandatoryItems.slice(0, 22);
+
   return [
     'Сделай финальную редакторскую полировку текста перед публикацией в Telegram.',
     `Диапазон объема: ${lengthRange.minLength}-${lengthRange.maxLength} символов.`,
@@ -875,7 +960,11 @@ function buildManualFinalEditorialPrompt(
     '— закончить текст завершенной мыслью;',
     '— не быть дословной копией исходника;',
     '— сохранить практические факты и ограничения исходника;',
+    '— сохранить обязательные пункты покрытия из списка ниже;',
     '— без markdown и без служебных комментариев.',
+    '',
+    'ОБЯЗАТЕЛЬНЫЕ ПУНКТЫ ПОКРЫТИЯ:',
+    ...coverageItems.map((item, index) => `${index + 1}. ${item}`),
     '',
     'ИСХОДНЫЙ ТЕКСТ:',
     sourceText,
@@ -883,6 +972,125 @@ function buildManualFinalEditorialPrompt(
     'ТЕКУЩИЙ ЧЕРНОВИК:',
     candidateText
   ].join('\n');
+}
+
+function buildManualCoveragePlanPrompt(sourceText: string, sourceItems: string[]): string {
+  return [
+    'Собери coverage-план для адаптации экспертной статьи про собак.',
+    'Верни только JSON без комментариев:',
+    '{"title":"...","mandatory_items":["..."],"key_restrictions":["..."]}',
+    '',
+    'Требования:',
+    '- mandatory_items: 10-20 коротких пунктов, только ключевые смысловые блоки исходника;',
+    '- key_restrictions: важные ограничения, условия, возраст/вес/допуски, если есть;',
+    '- ничего не выдумывать;',
+    '- обязательно включить все детектированные пункты ниже.',
+    '',
+    'Детектированные обязательные пункты:',
+    ...sourceItems.map((item, index) => `${index + 1}. ${item}`),
+    '',
+    'ИСХОДНЫЙ ТЕКСТ:',
+    sourceText
+  ].join('\n');
+}
+
+function parseManualCoveragePlan(raw: string): ManualCoveragePlan {
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) {
+    return {
+      title: 'Адаптация экспертной статьи',
+      mandatoryItems: [],
+      keyRestrictions: []
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(match[0]) as {
+      title?: unknown;
+      mandatory_items?: unknown;
+      key_restrictions?: unknown;
+    };
+
+    const title =
+      typeof parsed.title === 'string' && parsed.title.trim().length > 0
+        ? parsed.title.trim()
+        : 'Адаптация экспертной статьи';
+
+    const mandatoryItems = Array.isArray(parsed.mandatory_items)
+      ? dedupeStringList(
+          parsed.mandatory_items
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter((item) => item.length >= 4)
+        )
+      : [];
+
+    const keyRestrictions = Array.isArray(parsed.key_restrictions)
+      ? dedupeStringList(
+          parsed.key_restrictions
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter((item) => item.length >= 4)
+        )
+      : [];
+
+    return {
+      title,
+      mandatoryItems,
+      keyRestrictions
+    };
+  } catch {
+    return {
+      title: 'Адаптация экспертной статьи',
+      mandatoryItems: [],
+      keyRestrictions: []
+    };
+  }
+}
+
+function mergeMandatoryCoverageItems(aiItems: string[], sourceItems: string[]): string[] {
+  const merged = dedupeStringList([...sourceItems, ...aiItems]);
+  return merged.slice(0, 24);
+}
+
+function extractMandatoryCoverageItemsFromSource(sourceText: string): string[] {
+  const normalized = sourceText.toLowerCase();
+  const candidates: Array<{ label: string; patterns: RegExp[] }> = [
+    { label: 'Критерии выбора дрессировки по породе и образу жизни владельца', patterns: [/как\s+определиться\s+с\s+выбором/i] },
+    { label: 'Общий курс дрессировки (ОКД)', patterns: [/\bокд\b/i, /общий\s+курс\s+дрессировки/i] },
+    { label: 'Управляемая городская собака (УГС)', patterns: [/\bугс\b/i, /управляемая\s+городская\s+собака/i] },
+    { label: 'Защитно-караульная служба (ЗКС)', patterns: [/\bзкс\b/i, /защитно-караульная\s+служба/i] },
+    { label: 'Караульная служба (КС)', patterns: [/\bкс\b/i, /караульная\s+служба/i] },
+    { label: 'Большой русский ринг', patterns: [/большой\s+русский\s+ринг/i] },
+    { label: 'Буксировка лыжника и требования к возрасту/весу', patterns: [/буксировка\s+лыжника/i, /минимальн\w+\s+возраст/i] },
+    { label: 'Служебные (ведомственные) виды дрессировок', patterns: [/служебные\s*\(ведомственные\)\s+виды/i] },
+    { label: 'Международные виды дрессировок', patterns: [/международные\s+виды\s+дрессировок/i] },
+    { label: 'Универсальные виды дрессировок', patterns: [/универсальные\s+виды\s+дрессировок/i] },
+    { label: 'IGP/IPO и структура испытаний', patterns: [/\bigp\b/i, /\bipo\b/i] },
+    { label: 'Мондьоринг (послушание, прыжки, защита)', patterns: [/мондьоринг/i] },
+    { label: 'Обидиенс и пастушья служба', patterns: [/обидиенс/i, /пастьб/i] },
+    { label: 'Танцы с собакой и фристайл', patterns: [/танцы\s+с\s+собакой/i, /freestyle/i, /фристайл/i] },
+    { label: 'Флайбол', patterns: [/флайбол/i] },
+    { label: 'Скиджоринг и байкджоринг', patterns: [/скиджоринг/i, /байкджоринг/i] },
+    { label: 'Аджилити', patterns: [/аджилити/i] },
+    { label: 'Ноузворк', patterns: [/ноузворк/i, /nosework/i] },
+    { label: 'Курсинг и рейсинг', patterns: [/курсинг/i, /рейсинг/i] },
+    { label: 'Ограничения по породам/группам на рейсинг и курсинг', patterns: [/к\s+участию\s+допускаются\s+только\s+собаки/i, /мкф/i] },
+    { label: 'Альтернатива для пород вне списка: бега за механической приманкой', patterns: [/механическ\w+\s+приманк/i] }
+  ];
+
+  const items: string[] = [];
+  for (const candidate of candidates) {
+    if (candidate.patterns.some((pattern) => pattern.test(normalized))) {
+      items.push(candidate.label);
+    }
+  }
+
+  if (/вес\s+питомца\s+должен\s+быть\s+не\s+менее/i.test(normalized)) {
+    items.push('Сохранить числовые ограничения (возраст/вес/допуски), если они есть.');
+  }
+
+  return dedupeStringList(items);
 }
 
 function resolveManualAdaptationLengthRange(articleText: string): { minLength: number; maxLength: number } {
@@ -919,7 +1127,8 @@ function looksLikeModelRefusal(text: string): boolean {
 function isAcceptableManualAdaptation(
   sourceText: string,
   text: string,
-  lengthRange: { minLength: number; maxLength: number }
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
 ): boolean {
   return (
     text.length >= lengthRange.minLength &&
@@ -930,7 +1139,8 @@ function isAcceptableManualAdaptation(
     !endsWithIncompleteThought(text) &&
     !hasRawPdfLayoutArtifacts(text) &&
     !hasResidualMetadataMarkers(text) &&
-    !hasExcessiveSourceOverlap(sourceText, text)
+    !hasExcessiveSourceOverlap(sourceText, text) &&
+    !hasInsufficientCoverage(text, coveragePlan)
   );
 }
 
@@ -998,11 +1208,12 @@ function parseManualQualityAssessment(
   raw: string,
   sourceText: string,
   candidateText: string,
-  lengthRange: { minLength: number; maxLength: number }
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
 ): ManualQualityAssessment {
   const parsed = tryParseQualityJson(raw);
   if (parsed) {
-    return applyManualQualityHeuristics(parsed, sourceText, candidateText, lengthRange);
+    return applyManualQualityHeuristics(parsed, sourceText, candidateText, lengthRange, coveragePlan);
   }
 
   let score = 8;
@@ -1018,7 +1229,7 @@ function parseManualQualityAssessment(
     score,
     issues: ['Авто-оценка сработала по эвристике: верни чище и практичнее.'],
     rewritePlan: 'Убери шум, усили практичность, сохрани структуру и ограничения.'
-  }, sourceText, candidateText, lengthRange);
+  }, sourceText, candidateText, lengthRange, coveragePlan);
 }
 
 function tryParseQualityJson(raw: string): ManualQualityAssessment | null {
@@ -1146,7 +1357,8 @@ function applyManualQualityHeuristics(
   assessment: ManualQualityAssessment,
   sourceText: string,
   candidateText: string,
-  lengthRange: { minLength: number; maxLength: number }
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
 ): ManualQualityAssessment {
   let score = assessment.score;
   const issues = [...assessment.issues];
@@ -1189,6 +1401,11 @@ function applyManualQualityHeuristics(
   if (hasExcessiveSourceOverlap(sourceText, candidateText)) {
     score = Math.min(score, 5);
     issues.push('Текст слишком близок к исходнику и выглядит как копипаст.');
+  }
+
+  if (hasInsufficientCoverage(candidateText, coveragePlan)) {
+    score = Math.min(score, 4);
+    issues.push('Потеряны обязательные смысловые пункты исходника (недостаточное покрытие).');
   }
 
   const dedupedIssues = Array.from(new Set(issues));
@@ -1300,6 +1517,39 @@ function hasExcessiveSourceOverlap(sourceText: string, candidateText: string): b
   return sentenceReuse >= MANUAL_MAX_SENTENCE_REUSE;
 }
 
+function hasInsufficientCoverage(candidateText: string, coveragePlan: ManualCoveragePlan): boolean {
+  const mandatoryItems = coveragePlan.mandatoryItems.filter((item) => item.trim().length >= 4);
+  if (mandatoryItems.length === 0) {
+    return false;
+  }
+
+  const normalizedCandidate = normalizeOverlapText(candidateText);
+  const covered = mandatoryItems.filter((item) => isCoverageItemPresent(normalizedCandidate, item)).length;
+  const ratio = covered / mandatoryItems.length;
+  const threshold = mandatoryItems.length >= 6 ? MANUAL_MIN_COVERAGE_RATIO : 0.67;
+
+  return ratio < threshold;
+}
+
+function isCoverageItemPresent(normalizedCandidate: string, item: string): boolean {
+  const normalizedItem = normalizeOverlapText(item);
+  if (normalizedItem.length === 0) {
+    return true;
+  }
+
+  if (normalizedCandidate.includes(normalizedItem)) {
+    return true;
+  }
+
+  const tokens = normalizedItem.split(' ').filter((token) => token.length >= 4);
+  if (tokens.length < 2) {
+    return normalizedCandidate.includes(normalizedItem);
+  }
+
+  const matched = tokens.filter((token) => normalizedCandidate.includes(token)).length;
+  return matched / tokens.length >= 0.7;
+}
+
 function calculateShingleContainment(sourceText: string, candidateText: string, size: number): number {
   const sourceTokens = tokenizeForOverlap(sourceText);
   const candidateTokens = tokenizeForOverlap(candidateText);
@@ -1364,6 +1614,22 @@ function normalizeOverlapText(text: string): string {
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function dedupeStringList(items: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of items) {
+    const key = normalizeOverlapText(item);
+    if (key.length === 0 || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(item);
+  }
+
+  return result;
 }
 
 function collapseRepeatedIntroChunk(line: string): string {

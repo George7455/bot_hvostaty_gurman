@@ -148,3 +148,6 @@
 [✓] Step 148 — Re-validated compile integrity after model switch to `gpt-5.4-mini` (`npm run typecheck`, `npm run build` passed).
 [✓] Step 149 — Hardened `/upload` manual adaptation pipeline with strict publish-ready gate (metadata/noise rejection, source-overlap check) and final editorial pass; removed terminal raw-text fallback return path.
 [✓] Step 150 — Re-validated compile integrity after manual adaptation hardening (`npm run typecheck`, `npm run build` passed).
+[✓] Step 151 — Added two-stage `/upload` adaptation control: pre-generation JSON coverage plan + mandatory coverage propagation across base/expansion/rescue/final rewrite prompts.
+[✓] Step 152 — Added deterministic coverage gate (mandatory item coverage ratio) and integrated it into acceptance + quality scoring to prevent over-short/under-complete adaptations.
+[✓] Step 153 — Lowered Telegraph direct-post threshold to 2200 chars so long manual drafts are routed to Telegraph earlier; re-validated (`npm run typecheck`, `npm run build` passed).

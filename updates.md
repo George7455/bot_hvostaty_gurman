@@ -2553,3 +2553,28 @@ User-reported `/upload` output still contained copied source structure, repeated
 
 Impact:
 Manual adaptation now cannot silently pass near-raw PDF dumps into moderation; non-publish-ready text is forced through final rewrite gate and rejected if quality criteria remain unmet. Compile integrity re-validated (`npm run typecheck`, `npm run build` passed).
+
+## Update 167 — 2026-04-15
+
+File: src/modules/generation/index.ts, src/modules/telegram/index.ts, progress.md  
+Lines: `src/modules/generation/index.ts` (7, 37-190, 636-1094, 1127-1144, 1207-1233, 1356-1416, 1525-1597, 1640-1673), `src/modules/telegram/index.ts` (14), `progress.md` (151-153)
+
+Change:
+Implemented full-content preservation controls for `/upload` adaptation and earlier Telegraph routing:
+- added two-stage manual adaptation flow in generation service:
+  - stage A: model builds structured JSON coverage plan (`title`, `mandatory_items`, `key_restrictions`),
+  - stage B: all generation prompts (base/expand/rescue/improve/final) are constrained by mandatory coverage items;
+- added deterministic source-entity extraction for dog-training taxonomy and merged it with model-extracted coverage plan;
+- added strict coverage gate:
+  - new minimum mandatory-item coverage ratio (`MANUAL_MIN_COVERAGE_RATIO = 0.78`),
+  - acceptance now fails if required content coverage is insufficient,
+  - quality heuristics now penalize under-coverage explicitly;
+- extended quality evaluation and rewrite prompts with explicit coverage compliance criterion;
+- reduced direct Telegram publish threshold from `3500` to `2200` chars to route long drafts to Telegraph earlier.
+Also logged execution and verification in `progress.md`.
+
+Reason:
+User-reported regression: adapted `/upload` draft became too short and incomplete (cleaner text but loss of major sections from source article).
+
+Impact:
+`/upload` adaptation now prioritizes both cleanliness and factual completeness; key source blocks are enforced by coverage plan and rejected when omitted. Longer adapted drafts now more consistently publish via Telegraph rather than plain in-chat wall-of-text. Compile integrity re-validated (`npm run typecheck`, `npm run build` passed).
