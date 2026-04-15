@@ -603,6 +603,13 @@ function buildTemporaryManualAdaptationPrompt(
     '   — сокращать второстепенные примеры, если они не влияют на смысл;',
     '   — улучшать ритм, читаемость и структуру.',
     '',
+    '4. Обязательная очистка PDF-артефактов:',
+    '   — убирай служебные блоки и остатки верстки (Авторы, оглавление, футеры, навигация сайта, даты карточек);',
+    '   — убирай дубли заголовков и повторяющиеся фразы;',
+    '   — не оставляй переносы строк внутри одного предложения;',
+    '   — не копируй длинные перечни как сырой скан-поток; преобразуй в связный объясняющий текст;',
+    '   — в итоге текст должен выглядеть как цельная статья, а не как извлечение из PDF.',
+    '',
     'СТИЛЬ',
     '',
     'Текст должен быть:',
@@ -764,6 +771,7 @@ function buildManualQualityEvaluationPrompt(
     '6) Нет повторов фрагментов вроде "советы и рекомендации советы и рекомендации".',
     '7) Текст заканчивается завершенной мыслью, без оборванной концовки.',
     '8) Нет хвостовых дат/мусора вида "дек 2024", "фев 2025".',
+    '9) Нет сырой PDF-верстки: десятков коротких обрывочных строк и заголовков-перечней подряд.',
     '',
     'Верни только JSON без комментариев в формате:',
     '{"score": 0-10, "issues": ["..."], "rewrite_plan": "..."}',
@@ -798,6 +806,8 @@ function buildManualQualityImprovementPrompt(
     '— убрать дубли фраз и словосочетаний;',
     '— завершить финальную мысль без обрывов;',
     '— убрать хвостовые даты и карточки похожих материалов;',
+    '— убрать вид "сырого PDF" (обрывочные короткие строки и каскад заголовков);',
+    '— восстановить связное последовательное повествование;',
     '— без markdown, без отказных фраз, без воды.',
     '',
     'ИСХОДНИК:',
@@ -849,7 +859,8 @@ function isAcceptableManualAdaptation(
     !containsManualGarbage(text) &&
     !containsDateTailNoise(text) &&
     !hasDuplicateAdjacentFragments(text) &&
-    !endsWithIncompleteThought(text)
+    !endsWithIncompleteThought(text) &&
+    !hasRawPdfLayoutArtifacts(text)
   );
 }
 
@@ -1111,6 +1122,11 @@ function applyManualQualityHeuristics(
     issues.push('Финальная мысль выглядит незавершенной.');
   }
 
+  if (hasRawPdfLayoutArtifacts(candidateText)) {
+    score = Math.min(score, 5);
+    issues.push('Текст выглядит как сырой PDF-выгрузка (короткие рваные строки/каскад заголовков).');
+  }
+
   const dedupedIssues = Array.from(new Set(issues));
   return {
     score,
@@ -1134,4 +1150,25 @@ function collapseRepeatedIntroChunk(line: string): string {
   }
 
   return line;
+}
+
+function hasRawPdfLayoutArtifacts(text: string): boolean {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length < 18) {
+    return false;
+  }
+
+  const shortLines = lines.filter((line) => line.length <= 48).length;
+  const linesWithoutTerminalPunctuation = lines.filter((line) => !/[.!?…:]$/.test(line)).length;
+  const headlineLikeLines = lines.filter((line) => /^[А-ЯЁA-Z][^.!?]{3,80}$/.test(line)).length;
+
+  const shortLinesRatio = shortLines / lines.length;
+  const noPunctuationRatio = linesWithoutTerminalPunctuation / lines.length;
+  const headlineRatio = headlineLikeLines / lines.length;
+
+  return shortLinesRatio > 0.42 && noPunctuationRatio > 0.6 && headlineRatio > 0.3;
 }

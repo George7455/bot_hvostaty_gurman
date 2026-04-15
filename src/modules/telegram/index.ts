@@ -286,7 +286,7 @@ export class TelegramService implements TelegramModule {
       } finally {
         await parser.destroy();
       }
-      const articleText = parsed.text?.trim() ?? '';
+      const articleText = normalizePdfTextForAi(parsed.text ?? '');
       if (articleText.length === 0) {
         await ctx.reply('PDF не содержит читаемого текста.');
         return;
@@ -551,6 +551,91 @@ function isPdfNoiseLine(line: string): boolean {
   ];
 
   if (noisyPhrases.some((phrase) => normalized.includes(phrase))) {
+    return true;
+  }
+
+  return /^https?:\/\//i.test(normalized);
+}
+
+function normalizePdfTextForAi(rawText: string): string {
+  let text = rawText
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+
+  // Join hyphenated wraps: "дресси-\nровка" => "дрессировка"
+  text = text.replace(/([A-Za-zА-Яа-яЁё])-\n([A-Za-zА-Яа-яЁё])/g, '$1$2');
+
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !isPdfNormalizationNoiseLine(line));
+
+  // Drop exact adjacent duplicates from PDF navigation/header fragments.
+  const deduped: string[] = [];
+  for (const line of lines) {
+    const normalized = line.toLowerCase().replace(/\s+/g, ' ').trim();
+    const previous = deduped[deduped.length - 1];
+    if (!previous) {
+      deduped.push(line);
+      continue;
+    }
+
+    const previousNormalized = previous.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (normalized === previousNormalized) {
+      continue;
+    }
+
+    deduped.push(line);
+  }
+
+  // Flatten hard wraps from PDF layout to sentence-friendly text for generation.
+  const flattened = deduped.join(' ').replace(/\s+/g, ' ').trim();
+  return flattened;
+}
+
+function isPdfNormalizationNoiseLine(line: string): boolean {
+  const normalized = line.toLowerCase().trim();
+  if (normalized.length === 0) {
+    return true;
+  }
+
+  if (/^--\s*\d+\s+of\s+\d+\s*--$/i.test(line)) {
+    return true;
+  }
+
+  if (/^(оглавление|contents|авторы)$/i.test(normalized)) {
+    return true;
+  }
+
+  if (/^\d+\s*(мин|m(in)?)(\s+\d+)?$/i.test(normalized)) {
+    return true;
+  }
+
+  if (/^(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}$/i.test(normalized)) {
+    return true;
+  }
+
+  if (/^[\/|\\•\-\s\d]+$/.test(line) && line.length < 40) {
+    return true;
+  }
+
+  const noisePhrases = [
+    'время чтения',
+    'похожие статьи',
+    'поиск по сайту',
+    'используемая литература',
+    'бесплатная горячая линия',
+    'ежедневно с',
+    'написать нам',
+    'главная заводчикам',
+    'обучение заводчиков',
+    'статьи /',
+    'дрессировка и спорт ркф'
+  ];
+
+  if (noisePhrases.some((phrase) => normalized.includes(phrase))) {
     return true;
   }
 

@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 
 import type { AppEnv } from '../../config/index.js';
 
-const DEFAULT_MODEL = 'gpt-4o-mini';
+const DEFAULT_MODEL = 'gpt-5.4-mini';
 
 export interface AiModule {
   complete(prompt: string): Promise<string>;
