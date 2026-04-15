@@ -2529,3 +2529,27 @@ User requested switching model everywhere to ChatGPT 5.4 mini.
 
 Impact:
 All default and active local model configuration paths now resolve to `gpt-5.4-mini`; compile integrity confirmed via `npm run typecheck` and `npm run build`.
+
+## Update 166 — 2026-04-15
+
+File: src/modules/generation/index.ts, progress.md  
+Lines: `src/modules/generation/index.ts` (1-7, 36-87, 98-158, 792-886, 919-935, 968-995, 997-1022, 1058-1074, 1145-1200, 1202-1367), `progress.md` (149-150)
+
+Change:
+Strengthened `/upload` manual adaptation pipeline to block raw PDF-like output before moderation:
+- added strict publish-ready acceptance gate in manual flow with new checks for:
+  - residual metadata markers (`Авторы`, `Введение`, reading-time/email/tag-cloud artifacts),
+  - excessive lexical overlap with source text (8-token shingle containment + reused-sentence ratio),
+  - existing garbage/date-tail/duplicate/incomplete-ending/raw-layout checks,
+- added final editorial pass (`runFinalEditorialPass`) with dedicated cleanup prompt before final return,
+- switched manual candidate handling to normalization-first (`normalizeManualCandidateText`) on every generation pass,
+- removed deterministic terminal fallback return of source-like text and replaced with explicit hard-fail when quality gate is not reached,
+- extended quality evaluation + rewrite prompts with anti-copy and anti-metadata requirements,
+- extended heuristic scoring penalties for metadata leakage and near-copy output.
+Also recorded execution and verification steps in `progress.md`.
+
+Reason:
+User-reported `/upload` output still contained copied source structure, repeated blocks, metadata fragments, and unfinished editorial quality despite rewrite loop.
+
+Impact:
+Manual adaptation now cannot silently pass near-raw PDF dumps into moderation; non-publish-ready text is forced through final rewrite gate and rejected if quality criteria remain unmet. Compile integrity re-validated (`npm run typecheck`, `npm run build` passed).
