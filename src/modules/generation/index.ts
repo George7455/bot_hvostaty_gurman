@@ -37,8 +37,11 @@ export class GenerationService implements GenerationModule {
   public async adaptManualArticleText(articleText: string): Promise<string> {
     const sourceText = sanitizeManualSourceText(articleText);
     const lengthRange = resolveManualAdaptationLengthRange(sourceText);
+    let coveragePlan: ManualCoveragePlan | null = null;
+    let fallbackReason = 'quality pipeline rejected all generated candidates';
+
     try {
-      const coveragePlan = await this.extractManualCoveragePlan(sourceText);
+      coveragePlan = await this.extractManualCoveragePlan(sourceText);
       let candidate = normalizeManualCandidateText(
         await this.generateBaseManualCandidate(sourceText, lengthRange, coveragePlan)
       );
@@ -112,17 +115,48 @@ export class GenerationService implements GenerationModule {
       }
 
       if (isSafeManualAdaptationForFallback(sourceText, finalEdited, lengthRange)) {
+        this.logManualFallback('safe-final', 'emergency candidate rejected, using final editorial candidate', {
+          failures: collectManualQualityFailures(sourceText, finalEdited, lengthRange, coveragePlan)
+        });
         return finalEdited;
       }
 
       if (isSafeManualAdaptationForFallback(sourceText, bestCandidate, lengthRange)) {
+        this.logManualFallback('safe-best', 'emergency/final candidates rejected, using best-scored candidate', {
+          bestScore,
+          failures: collectManualQualityFailures(sourceText, bestCandidate, lengthRange, coveragePlan)
+        });
         return bestCandidate;
       }
-    } catch {
-      // Fall through to deterministic fallback.
+
+      fallbackReason = 'all generated candidates failed minimal-safe gates';
+    } catch (error: unknown) {
+      fallbackReason = 'manual adaptation pipeline threw exception';
+      this.logManualFallback('pipeline-exception', fallbackReason, {
+        error: formatManualPipelineError(error),
+        hasCoveragePlan: coveragePlan !== null
+      });
     }
 
-    return buildManualDeterministicFallback(sourceText, lengthRange);
+    const deterministicFallback = buildManualDeterministicFallback(
+      sourceText,
+      lengthRange,
+      coveragePlan?.mandatoryItems ?? []
+    );
+    this.logManualFallback('deterministic', fallbackReason, {
+      sourceLength: sourceText.length,
+      outputLength: deterministicFallback.length,
+      mandatoryItems: coveragePlan?.mandatoryItems.length ?? 0
+    });
+    return deterministicFallback;
+  }
+
+  private logManualFallback(stage: string, reason: string, details?: Record<string, unknown>): void {
+    console.warn('manual_adaptation_fallback', {
+      stage,
+      reason,
+      ...(details ?? {})
+    });
   }
 
   private async generateNonEmpty(prompt: string): Promise<string> {
@@ -749,7 +783,8 @@ function buildTemporaryManualAdaptationPrompt(
     '— экспертным, но не тяжёлым;',
     '— без воды;',
     '— без рекламной подачи;',
-    '— без лишней фамильярности.',
+    '— без лишней фамильярности;',
+    '— написанным от первого лица (я/мне/мой подход).',
     '',
     'ФОРМАТИРОВАНИЕ',
     '',
@@ -759,6 +794,7 @@ function buildTemporaryManualAdaptationPrompt(
     '— Абзацы должны быть короткими или средними.',
     '— Текст должен удобно читаться с телефона.',
     '— Смайлы: максимум 0–1 на весь пост, только если уместно.',
+    '— Добавь подзаголовки-строки в формате "Короткий подзаголовок:".',
     '',
     'СТРУКТУРА',
     '',
@@ -791,6 +827,7 @@ function buildTemporaryManualAdaptationPrompt(
     '— объясни проще;',
     '— но не делай банально;',
     '— не убирай экспертную точность.',
+    '— не копируй длинные фрагменты исходника дословно (длиннее 6 слов подряд).',
     '',
     'ОБЯЗАТЕЛЬНАЯ ВНУТРЕННЯЯ ПРОВЕРКА ПЕРЕД ОТВЕТОМ',
     '',
@@ -801,6 +838,9 @@ function buildTemporaryManualAdaptationPrompt(
     '— не исчезли ли важные различия;',
     '— не появилась ли отсебятина;',
     '— стал ли текст легче, но не беднее по смыслу.',
+    '— есть ли минимум 3 подзаголовка и понятные абзацы под ними;',
+    '— выдержана ли подача от первого лица;',
+    '— нет ли длинных дословных кусков из исходника;',
     `— итоговый объем не меньше ${lengthRange.minLength} и не больше ${lengthRange.maxLength} символов.`,
     '— материал не превращен в короткий конспект.',
     '',
@@ -827,6 +867,7 @@ function buildTemporaryManualAdaptationPrompt(
     'Без комментариев.',
     'Без заголовков вроде "вот готовый вариант".',
     'Без markdown-кода.',
+    'Сделай структуру: 1) Советы от экспертов:, 2) минимум 3 подзаголовка с абзацами, 3) итог от первого лица.',
     'Адаптируй его, чтобы информация бралась из присланого текста или pdf файл.',
     `Диапазон объема: ${lengthRange.minLength}-${lengthRange.maxLength} символов.`,
     'Если исходник большой, верни подробный длинный пост, а не короткое резюме.',
@@ -859,6 +900,10 @@ function buildManualAdaptationExpansionPrompt(
     '— не сжимай перечни дисциплин в общие фразы;',
     '— обязательно покрой все важные пункты исходника из списка ниже;',
     '— сделай полезный развернутый экспертный текст в Telegram-формате;',
+    '— пиши от первого лица (я/мне/мой подход);',
+    '— сделай минимум 3 подзаголовка в формате "Короткий подзаголовок:";',
+    '— дели текст на абзацы, не оставляй простыню;',
+    '— пересказывай своими словами, не копируй длинные фрагменты исходника;',
     '— без markdown;',
     '— без пустых бессодержательных абзацев;',
     '— без выдумок.',
@@ -894,6 +939,10 @@ function buildManualAdaptationRescuePrompt(
     '— обязательно покрыть каждый обязательный пункт из списка ниже;',
     '— не придумывать новые факты;',
     '— не сворачивать длинные перечни в общие слова;',
+    '— пиши от первого лица;',
+    '— минимум 3 подзаголовка в формате "Короткий подзаголовок:";',
+    '— структурируй абзацами;',
+    '— полностью перефразируй, не копируй длинные куски исходника;',
     '— без markdown;',
     '— только готовый текст поста.',
     '',
@@ -935,6 +984,8 @@ function buildManualQualityEvaluationPrompt(
     '10) Текст не является почти дословной копией исходника (обязательна редакторская переработка).',
     '11) Нет мета-маркеров вроде "Авторы", "Введение", email-адресов и числовых карточек чтения.',
     `12) Покрыты обязательные пункты содержания из списка ниже (не менее ${coverageThresholdPercent}%).`,
+    '13) Текст написан от первого лица (я/мне/мой подход).',
+    '14) Есть минимум 3 подзаголовка с абзацами под ними.',
     '',
     'Верни только JSON без комментариев в формате:',
     '{"score": 0-10, "issues": ["..."], "rewrite_plan": "..."}',
@@ -980,6 +1031,8 @@ function buildManualQualityImprovementPrompt(
     '— восстановить связное последовательное повествование;',
     '— убрать мета-слова ("Авторы", "Введение"), email и технические счетчики;',
     '— не копировать исходник дословно: нужна полноценная редакторская переработка;',
+    '— подача строго от первого лица;',
+    '— добавить минимум 3 подзаголовка и разбить текст на абзацы;',
     `— включить все обязательные пункты из списка покрытия (не меньше ${coverageThresholdPercent}%);`,
     '— без markdown, без отказных фраз, без воды.',
     '',
@@ -1012,6 +1065,8 @@ function buildManualFinalEditorialPrompt(
     '— собрать материал в последовательный, цельный, легко читаемый пост;',
     '— закончить текст завершенной мыслью;',
     '— не быть дословной копией исходника;',
+    '— подача от первого лица;',
+    '— минимум 3 подзаголовка и абзацная структура;',
     '— сохранить практические факты и ограничения исходника;',
     '— сохранить обязательные пункты покрытия из списка ниже;',
     '— без markdown и без служебных комментариев.',
@@ -1042,6 +1097,9 @@ function buildManualEmergencyFallbackPrompt(
     'Обязательные условия:',
     '— убрать PDF-мусор, мета-блоки, повторы;',
     '— сохранить ключевые практические пункты исходника;',
+    '— писать от первого лица;',
+    '— минимум 3 подзаголовка и читабельные абзацы;',
+    '— пересказать своими словами, без копирования длинных фрагментов;',
     '— завершенная финальная мысль;',
     '— без markdown и без служебных комментариев.',
     '',
@@ -1072,6 +1130,8 @@ function buildManualAntiOverlapPrompt(
     '— полностью перефразируй формулировки;',
     '— не копируй длинные предложения из исходника;',
     '— сохрани факты, ограничения и практические рекомендации;',
+    '— пиши от первого лица;',
+    '— минимум 3 подзаголовка + абзацы;',
     '— убери мета-блоки и служебные вставки;',
     '— без markdown и без комментариев.',
     '',
@@ -1208,11 +1268,18 @@ function extractMandatoryCoverageItemsFromSource(sourceText: string): string[] {
 function resolveManualAdaptationLengthRange(articleText: string): { minLength: number; maxLength: number } {
   const sourceLength = articleText.trim().length;
   const minLength =
-    sourceLength >= 3500 ? Math.floor(sourceLength * 0.8) :
-    sourceLength >= 2000 ? Math.floor(sourceLength * 0.7) :
-    sourceLength >= 1200 ? Math.floor(sourceLength * 0.6) :
-    800;
-  const maxLength = Math.max(minLength + 500, Math.floor(sourceLength * 1.2));
+    sourceLength >= 16_000 ? 5600 :
+    sourceLength >= 12_000 ? 5200 :
+    sourceLength >= 9000 ? 4600 :
+    sourceLength >= 6000 ? 3900 :
+    sourceLength >= 3500 ? Math.max(2600, Math.floor(sourceLength * 0.58)) :
+    sourceLength >= 2000 ? Math.max(1700, Math.floor(sourceLength * 0.55)) :
+    sourceLength >= 1200 ? Math.max(1200, Math.floor(sourceLength * 0.5)) :
+    900;
+  const maxLength = Math.max(
+    minLength + 900,
+    Math.min(9800, Math.floor(sourceLength * 0.95))
+  );
 
   return { minLength, maxLength };
 }
@@ -1244,6 +1311,8 @@ function isAcceptableManualAdaptation(
 ): boolean {
   return (
     text.length >= lengthRange.minLength &&
+    hasFirstPersonVoice(text) &&
+    hasStructuredManualParagraphs(text) &&
     !looksLikeModelRefusal(text) &&
     !containsManualGarbage(text) &&
     !containsDateTailNoise(text) &&
@@ -1526,6 +1595,16 @@ function applyManualQualityHeuristics(
     issues.push('Потеряны обязательные смысловые пункты исходника (недостаточное покрытие).');
   }
 
+  if (!hasFirstPersonVoice(candidateText)) {
+    score = Math.min(score, 6);
+    issues.push('Текст не выдержан в подаче от первого лица.');
+  }
+
+  if (!hasStructuredManualParagraphs(candidateText)) {
+    score = Math.min(score, 6);
+    issues.push('Не хватает подзаголовков и абзацной структуры.');
+  }
+
   const dedupedIssues = Array.from(new Set(issues));
   return {
     score,
@@ -1750,27 +1829,178 @@ function stripRuDateAndReadTimeMarkers(text: string): string {
   return text
     .replace(/(^|\s)\d+\s*мин(?:ут[аы]?)?(?=\s|$)/gi, ' ')
     .replace(/(^|\s)\d{1,2}\s*(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)(?:\s+\d{4})?(?=\s|$)/gi, ' ')
-    .replace(/(^|\s)(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}(?=\s|$)/gi, ' ')
-    .replace(/(^|\s)\d{4}\s*г\.?(?=\s|$)/gi, ' ');
+    .replace(/(^|\s)(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}(?=\s|$)/gi, ' ');
 }
 
 function buildManualDeterministicFallback(
   sourceText: string,
-  lengthRange: { minLength: number; maxLength: number }
+  lengthRange: { minLength: number; maxLength: number },
+  mandatoryItems: string[] = []
 ): string {
-  const prepared = normalizeManualCandidateText(
-    `Советы от экспертов:\n${sourceText}`
-  );
+  const topics = pickDeterministicFallbackTopics(sourceText, mandatoryItems);
+  const sectionLines: string[] = [
+    'Советы от экспертов:',
+    '',
+    'Как я смотрю на задачу:',
+    'Я всегда начинаю с того, что сопоставляю задачи собаки, мой режим и реальные условия дома. Если формат не подходит нам обоим, я не форсирую его, а выбираю более безопасный путь.',
+    '',
+    'Что я обязательно учитываю:',
+    ...topics.slice(0, 8).map((topic) =>
+      `Я отдельно проверяю ${topic.toLowerCase()}: так я не теряю важные детали и не упрощаю решение до общих фраз.`
+    ),
+    '',
+    'Как я выстраиваю практику:',
+    'Сначала я закрепляю базовое послушание и управляемость, затем добавляю профильные дисциплины по целям. На каждом этапе я смотрю на ограничения по возрасту, нагрузке и подготовке, чтобы не навредить собаке.',
+    '',
+    'Мой итог:',
+    'Для меня рабочий подход — это не самый модный формат, а тот, который дает стабильный результат именно в нашей связке: понятные шаги, контроль нагрузки и регулярная практика без перегибов.'
+  ];
 
-  if (prepared.length <= lengthRange.maxLength) {
-    return prepared;
+  const sourceSentences = sourceText
+    .split(/[.!?…]+/)
+    .map((sentence) => sentence.replace(/\s+/g, ' ').trim())
+    .filter((sentence) => sentence.length >= 50 && sentence.length <= 200)
+    .filter((sentence) => !containsManualGarbage(sentence))
+    .slice(0, 8);
+
+  if (sourceSentences.length > 0) {
+    sectionLines.splice(
+      sectionLines.length - 3,
+      0,
+      '',
+      'Что я беру из исходного материала:',
+      ...sourceSentences.map(
+        (sentence) => `Я отдельно фиксирую, что ${sentence.charAt(0).toLowerCase()}${sentence.slice(1)}.`
+      )
+    );
   }
 
-  return prepared
-    .slice(0, lengthRange.maxLength)
+  let prepared = normalizeManualCandidateText(sectionLines.join('\n'));
+  const minFallbackLength = Math.max(1100, Math.floor(lengthRange.minLength * 0.7));
+
+  if (prepared.length < minFallbackLength && topics.length > 8) {
+    const extra = topics.slice(8, 14).map((topic) =>
+      `В моем плане отдельно отмечаю ${topic.toLowerCase()}, чтобы сохранить практическую пользу исходника.`
+    );
+    prepared = normalizeManualCandidateText(`${prepared}\n\n${extra.join('\n')}`);
+  }
+
+  return clampManualTextToMaxLength(prepared, lengthRange.maxLength);
+}
+
+function pickDeterministicFallbackTopics(sourceText: string, mandatoryItems: string[]): string[] {
+  const sourceItems = extractMandatoryCoverageItemsFromSource(sourceText);
+  const merged = dedupeStringList([...mandatoryItems, ...sourceItems])
+    .map((item) => item.replace(/\s+/g, ' ').trim())
+    .filter((item) => item.length >= 6)
+    .slice(0, 14);
+
+  if (merged.length > 0) {
+    return merged;
+  }
+
+  return [
+    'базовое послушание и управляемость',
+    'критерии выбора формата по породе и образу жизни',
+    'ограничения по возрасту, весу и нагрузке',
+    'пошаговое усложнение практики без перегруза'
+  ];
+}
+
+function clampManualTextToMaxLength(text: string, maxLength: number): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  const sliced = text
+    .slice(0, maxLength)
     .trimEnd()
-    .replace(/[,\s;:–-]*$/u, '')
-    .concat('…');
+    .replace(/[,\s;:–-]*$/u, '');
+
+  const lastParagraphBreak = sliced.lastIndexOf('\n');
+  if (lastParagraphBreak > Math.floor(maxLength * 0.7)) {
+    return sliced.slice(0, lastParagraphBreak).trimEnd();
+  }
+
+  const lastSentenceBreak = Math.max(
+    sliced.lastIndexOf('.'),
+    sliced.lastIndexOf('!'),
+    sliced.lastIndexOf('?')
+  );
+  if (lastSentenceBreak > Math.floor(maxLength * 0.7)) {
+    return sliced.slice(0, lastSentenceBreak + 1).trimEnd();
+  }
+
+  return `${sliced}…`;
+}
+
+function hasFirstPersonVoice(text: string): boolean {
+  return /(^|\s)(я|мне|меня|мой|моя|мо[её]|мои|мы|нам|наш|наша|наше|наши)(?=\s|[,.!?;:])/iu.test(
+    text
+  );
+}
+
+function hasStructuredManualParagraphs(text: string): boolean {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length < 7) {
+    return false;
+  }
+
+  const subheadingIndices = lines.flatMap((line, index) => {
+    if (index === 0) {
+      return [];
+    }
+
+    if (!line.endsWith(':') || line.length > 80) {
+      return [];
+    }
+
+    if (/[.!?]/.test(line.slice(0, -1))) {
+      return [];
+    }
+
+    return [index];
+  });
+
+  if (subheadingIndices.length < 3) {
+    return false;
+  }
+
+  const subheadingsWithBody = subheadingIndices.filter((index) => {
+    const next = lines[index + 1] ?? '';
+    return next.length >= 45;
+  }).length;
+
+  const contentLineCount = lines.filter((line, index) => {
+    if (index === 0) {
+      return false;
+    }
+    if (line.endsWith(':')) {
+      return false;
+    }
+    return line.length >= 45;
+  }).length;
+
+  return subheadingsWithBody >= 3 && contentLineCount >= 4;
+}
+
+function formatManualPipelineError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return 'unknown manual adaptation error';
+  }
 }
 
 function isSafeManualAdaptationForFallback(
@@ -1781,6 +2011,8 @@ function isSafeManualAdaptationForFallback(
   const minSafeLength = Math.max(900, Math.floor(lengthRange.minLength * 0.75));
   return (
     text.length >= minSafeLength &&
+    hasFirstPersonVoice(text) &&
+    hasStructuredManualParagraphs(text) &&
     !looksLikeModelRefusal(text) &&
     !containsManualGarbage(text) &&
     !hasResidualMetadataMarkers(text) &&
@@ -1789,6 +2021,54 @@ function isSafeManualAdaptationForFallback(
     !hasRawPdfLayoutArtifacts(text) &&
     !endsWithIncompleteThought(text)
   );
+}
+
+function collectManualQualityFailures(
+  sourceText: string,
+  text: string,
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
+): string[] {
+  const failures: string[] = [];
+
+  if (text.length < lengthRange.minLength) {
+    failures.push('below-min-length');
+  }
+  if (!hasFirstPersonVoice(text)) {
+    failures.push('missing-first-person-voice');
+  }
+  if (!hasStructuredManualParagraphs(text)) {
+    failures.push('missing-structured-subheadings');
+  }
+  if (containsManualGarbage(text)) {
+    failures.push('contains-site-garbage');
+  }
+  if (containsDateTailNoise(text)) {
+    failures.push('contains-date-tail-noise');
+  }
+  if (hasDuplicateAdjacentFragments(text)) {
+    failures.push('has-duplicate-fragments');
+  }
+  if (endsWithIncompleteThought(text)) {
+    failures.push('incomplete-ending');
+  }
+  if (hasRawPdfLayoutArtifacts(text)) {
+    failures.push('raw-pdf-layout-artifacts');
+  }
+  if (hasResidualMetadataMarkers(text)) {
+    failures.push('residual-metadata-markers');
+  }
+  if (hasLeadMetadataLeakage(text)) {
+    failures.push('lead-metadata-leakage');
+  }
+  if (hasExcessiveSourceOverlap(sourceText, text)) {
+    failures.push('excessive-source-overlap');
+  }
+  if (hasInsufficientCoverage(text, coveragePlan)) {
+    failures.push('insufficient-coverage');
+  }
+
+  return failures;
 }
 
 function isCoverageItemPresent(normalizedCandidate: string, item: string): boolean {

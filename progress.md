@@ -172,3 +172,8 @@
 [✓] Step 172 — Ran full project integrity verification sweep (`npm run typecheck`, `npm run build`, `npx prisma validate`) — all checks passed.
 [✓] Step 173 — Performed static contradiction audit for `/upload` runtime paths (old ETA strings, legacy hard-fail message, coverage/fallback consistency) across source files.
 [✓] Step 174 — Verified built artifacts in `dist` are synchronized with latest `/upload` safeguards (5–7 minute ETA, progress heartbeat, deterministic fallback functions present).
+[✓] Step 175 — Updated `/upload` generation prompts and acceptance checks to enforce first-person voice, subheadings, and paragraph structure across expansion/rescue/quality/final/emergency passes.
+[✓] Step 176 — Reworked deterministic fallback in generation: replaced near-source copy behavior with structured first-person template built from mandatory/source topics and added detailed fallback diagnostics logging.
+[✓] Step 177 — Rebalanced long-PDF length targets in manual adaptation to reduce overlap pressure on large inputs while keeping detailed output range.
+[✓] Step 178 — Fixed aggressive date/number cleanup to preserve meaningful years and numeric constraints (removed broad standalone-year stripping in generation and Telegram normalization paths).
+[✓] Step 179 — Replaced PDF text flattening with paragraph reconstruction in Telegram preprocessing and re-validated compile integrity (`npm run typecheck`, `npm run build` passed).

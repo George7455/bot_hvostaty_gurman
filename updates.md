@@ -2722,3 +2722,32 @@ User requested end-to-end confidence check that current build has no obvious fai
 
 Impact:
 Current local build is internally consistent at compile/schema/static-audit level; no immediate contradictions were detected in `/upload` code path under available offline checks.
+
+## Update 174 — 2026-04-16
+
+File: src/modules/generation/index.ts, src/modules/telegram/index.ts, progress.md  
+Lines: `src/modules/generation/index.ts` (37-151, 880-1139, 1268-1326, 1598-2068), `src/modules/telegram/index.ts` (574-857), `progress.md` (175-179)
+
+Change:
+Implemented the requested 5-point `/upload` correction set plus style hardening for manual adaptation output:
+- generation style/structure enforcement:
+  - expanded manual rewrite prompts (expansion/rescue/quality/final/emergency/anti-overlap) with explicit requirements: first-person voice, minimum three subheadings, paragraph structure, and anti-copy rewriting;
+  - added structural acceptance gates (`hasFirstPersonVoice`, `hasStructuredManualParagraphs`) into both strict acceptance and safe fallback acceptance;
+  - added matching heuristic penalties in quality scoring when first-person or subheading structure is missing;
+- fallback reliability and observability:
+  - added explicit fallback reason tracking (`fallbackReason`) and structured fallback diagnostics logging (`logManualFallback`, `formatManualPipelineError`, `collectManualQualityFailures`);
+  - replaced deterministic fallback behavior from near-source passthrough to structured first-person template synthesis based on extracted mandatory/source topics (`buildManualDeterministicFallback`, `pickDeterministicFallbackTopics`);
+- long-PDF length conflict rebalance:
+  - replaced aggressive length scaling (`0.8`+ for large texts) with capped adaptive ranges in `resolveManualAdaptationLengthRange(...)` to reduce overlap/copy pressure on very long sources;
+- date/year cleanup precision:
+  - removed broad standalone-year stripping (`\\d{4} г`) in shared date-cleanup helpers so meaningful years are no longer deleted from content in generation and Telegram preprocessing;
+- Telegram PDF paragraph preservation:
+  - replaced total line flattening in `normalizePdfTextForAi(...)` with paragraph reconstruction (`rebuildPdfParagraphs`, `shouldStartNewPdfParagraph`, `isLikelyPdfHeadingLine`);
+  - removed aggressive inline deletion of all 3-6 digit numbers in `cleanInlinePdfArtifacts(...)` to preserve important numeric constraints from source text.
+Also logged atomic execution steps in `progress.md` and re-validated compile integrity.
+
+Reason:
+User-reported quality issue persisted after multiple iterations: output still looked like concatenated source dump (weak paragraphing, metadata leakage patterns, excessive lexical proximity, missing first-person editorial voice, and accidental loss of meaningful year/number data).
+
+Impact:
+`/upload` manual adaptation is now stricter on editorial format and rewrite quality while safer for long PDFs: outputs are gated for first-person + subheading structure, fallback no longer returns near-raw source style, year/number semantics are preserved better, and PDF text enters generation with paragraph boundaries instead of a single flattened stream. Compile checks passed (`npm run typecheck`, `npm run build`).

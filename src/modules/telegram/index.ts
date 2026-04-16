@@ -603,13 +603,8 @@ function normalizePdfTextForAi(rawText: string): string {
     deduped.push(line);
   }
 
-  // Flatten hard wraps from PDF layout to sentence-friendly text for generation.
-  const flattened = deduped
-    .join(' ')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\s+([,.;:!?])/g, '$1')
-    .trim();
-  return flattened;
+  const paragraphs = rebuildPdfParagraphs(deduped);
+  return paragraphs.join('\n\n').trim();
 }
 
 function trimPdfTailNoise(text: string): string {
@@ -749,7 +744,6 @@ function cleanInlinePdfArtifacts(line: string): string {
     line
       .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, ' ')
   )
-    .replace(/(^|\s)\d{3,6}(?=\s|$)/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -780,8 +774,73 @@ function stripRuDateAndReadTimeMarkers(text: string): string {
   return text
     .replace(/(^|\s)\d+\s*мин(?:ут[аы]?)?(?=\s|$)/gi, ' ')
     .replace(/(^|\s)\d{1,2}\s*(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)(?:\s+\d{4})?(?=\s|$)/gi, ' ')
-    .replace(/(^|\s)(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}(?=\s|$)/gi, ' ')
-    .replace(/(^|\s)\d{4}\s*г\.?(?=\s|$)/gi, ' ');
+    .replace(/(^|\s)(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}(?=\s|$)/gi, ' ');
+}
+
+function rebuildPdfParagraphs(lines: string[]): string[] {
+  const paragraphs: string[] = [];
+  let current = '';
+
+  for (const line of lines) {
+    const cleaned = line.replace(/\s+/g, ' ').trim();
+    if (cleaned.length === 0) {
+      continue;
+    }
+
+    if (current.length === 0) {
+      current = cleaned;
+      continue;
+    }
+
+    if (shouldStartNewPdfParagraph(current, cleaned)) {
+      paragraphs.push(current.trim());
+      current = cleaned;
+      continue;
+    }
+
+    current = `${current} ${cleaned}`.replace(/\s+/g, ' ').trim();
+  }
+
+  if (current.length > 0) {
+    paragraphs.push(current.trim());
+  }
+
+  return paragraphs
+    .map((paragraph) => paragraph.replace(/\s+([,.;:!?])/g, '$1').trim())
+    .filter((paragraph) => paragraph.length > 0);
+}
+
+function shouldStartNewPdfParagraph(previous: string, next: string): boolean {
+  if (isLikelyPdfHeadingLine(next)) {
+    return true;
+  }
+
+  if (previous.length >= 420) {
+    return true;
+  }
+
+  if (/[.!?…]$/.test(previous) && next.length >= 48) {
+    return true;
+  }
+
+  if (/^[0-9]+[.)]\s+/.test(next)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isLikelyPdfHeadingLine(line: string): boolean {
+  if (!line.endsWith(':') || line.length > 90) {
+    return false;
+  }
+
+  if (/[.!?]/.test(line.slice(0, -1))) {
+    return false;
+  }
+
+  const lettersOnly = line.replace(/[^A-Za-zА-Яа-яЁё\s]/g, '').trim();
+  return lettersOnly.length >= 6;
 }
 
 function normalizePdfLineKey(line: string): string {
