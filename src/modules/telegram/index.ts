@@ -14,6 +14,7 @@ const TELEGRAM_MAX_MESSAGE_CHARS = 4096;
 const TELEGRAM_DIRECT_PUBLISH_LIMIT = 2200;
 const TELEGRAM_FILE_FETCH_TIMEOUT_MS = 20_000;
 const TELEGRAM_FILE_FETCH_RETRIES = 3;
+const PDF_PROGRESS_UPDATE_INTERVAL_MS = 90_000;
 
 export interface TelegramModule extends ModerationDeliveryPort, PublishingTransport {
   start(): Promise<void>;
@@ -275,25 +276,29 @@ export class TelegramService implements TelegramModule {
         return;
       }
 
-      await ctx.reply('PDF получен. Обрабатываю текст и формирую публикацию, это может занять до 1-2 минут.');
-
-      const buffer = await this.downloadPdfBuffer(fileId);
-      const PdfParse = await this.getPdfParseClass();
-      const parser = new PdfParse({ data: buffer });
-      let parsed: { text?: string };
+      await ctx.reply('PDF получен. Обрабатываю текст и формирую публикацию, это может занять до 5-7 минут.');
+      const progressTimer = startPdfProgressUpdates(ctx);
       try {
-        parsed = await parser.getText();
-      } finally {
-        await parser.destroy();
-      }
-      const articleText = normalizePdfTextForAi(parsed.text ?? '');
-      if (articleText.length === 0) {
-        await ctx.reply('PDF не содержит читаемого текста.');
-        return;
-      }
+        const buffer = await this.downloadPdfBuffer(fileId);
+        const PdfParse = await this.getPdfParseClass();
+        const parser = new PdfParse({ data: buffer });
+        let parsed: { text?: string };
+        try {
+          parsed = await parser.getText();
+        } finally {
+          await parser.destroy();
+        }
+        const articleText = normalizePdfTextForAi(parsed.text ?? '');
+        if (articleText.length === 0) {
+          await ctx.reply('PDF не содержит читаемого текста.');
+          return;
+        }
 
-      const draftId = await this.moderationModule.processManualUploadArticle(userId, articleText);
-      await ctx.reply(`PDF принят. Черновик ${draftId} отправлен на модерацию.`);
+        const draftId = await this.moderationModule.processManualUploadArticle(userId, articleText);
+        await ctx.reply(`PDF принят. Черновик ${draftId} отправлен на модерацию.`);
+      } finally {
+        clearInterval(progressTimer);
+      }
     } catch (error: unknown) {
       await safeReply(ctx, `Failed to process PDF: ${toErrorMessage(error)}`);
     }
@@ -378,6 +383,15 @@ async function safeReply(ctx: Context, text: string): Promise<void> {
       error
     });
   }
+}
+
+function startPdfProgressUpdates(ctx: Context): NodeJS.Timeout {
+  return setInterval(() => {
+    void safeReply(
+      ctx,
+      'Все еще обрабатываю PDF и собираю черновик. Для больших файлов это нормально и может занять несколько минут.'
+    );
+  }, PDF_PROGRESS_UPDATE_INTERVAL_MS);
 }
 
 async function fetchBufferWithRetry(url: string, attempts: number, timeoutMs: number): Promise<Buffer> {
@@ -565,13 +579,14 @@ function normalizePdfTextForAi(rawText: string): string {
 
   // Join hyphenated wraps: "дресси-\nровка" => "дрессировка"
   text = text.replace(/([A-Za-zА-Яа-яЁё])-\n([A-Za-zА-Яа-яЁё])/g, '$1$2');
+  text = trimPdfTailNoise(text);
 
   const lines = text
     .split('\n')
-    .map((line) => line.trim())
+    .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter((line) => line.length > 0)
     .map((line) => cleanInlinePdfArtifacts(collapseLineRepetition(line)))
-    .map((line) => line.replace(/\s{2,}/g, ' ').trim())
+    .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter((line) => line.length > 0)
     .filter((line) => !isPdfNormalizationNoiseLine(line))
     .filter((line) => !isPdfLikelyMetadataLine(line));
@@ -597,6 +612,25 @@ function normalizePdfTextForAi(rawText: string): string {
   return flattened;
 }
 
+function trimPdfTailNoise(text: string): string {
+  const markers = [
+    'как приучить собаку к наморднику?',
+    'команды для собак: обучение и советы',
+    'похожие статьи'
+  ];
+
+  const normalized = text.toLowerCase();
+  let cutoff = text.length;
+  for (const marker of markers) {
+    const index = normalized.indexOf(marker);
+    if (index >= 0 && index < cutoff) {
+      cutoff = index;
+    }
+  }
+
+  return text.slice(0, cutoff);
+}
+
 function isPdfNormalizationNoiseLine(line: string): boolean {
   const normalized = line.toLowerCase().trim();
   if (normalized.length === 0) {
@@ -620,6 +654,10 @@ function isPdfNormalizationNoiseLine(line: string): boolean {
   }
 
   if (/^(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}$/i.test(normalized)) {
+    return true;
+  }
+
+  if (looksLikePdfStatLine(normalized)) {
     return true;
   }
 
@@ -671,6 +709,10 @@ function isPdfLikelyMetadataLine(line: string): boolean {
     return true;
   }
 
+  if (looksLikePdfStatLine(normalized)) {
+    return true;
+  }
+
   if (
     !/[.!?;:]/.test(line) &&
     (line.match(/\([^)]+\)/g)?.length ?? 0) >= 4 &&
@@ -703,14 +745,43 @@ function isLikelyTagCloudLine(line: string): boolean {
 }
 
 function cleanInlinePdfArtifacts(line: string): string {
-  return line
-    .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, ' ')
-    .replace(/\b\d+\s*мин(ут[аы]?)?\b/gi, ' ')
-    .replace(/\b\d{1,2}\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s*\d{4}\b/gi, ' ')
-    .replace(/\b(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}\b/gi, ' ')
-    .replace(/\b\d{4}\s*г\.?\b/gi, ' ')
-    .replace(/\s{2,}/g, ' ')
+  return stripRuDateAndReadTimeMarkers(
+    line
+      .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, ' ')
+  )
+    .replace(/(^|\s)\d{3,6}(?=\s|$)/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
+}
+
+function looksLikePdfStatLine(line: string): boolean {
+  const normalized = line.replace(/\s+/g, ' ').trim();
+  if (normalized.length === 0 || normalized.length > 80) {
+    return false;
+  }
+
+  const hasReadTime = /(^|\s)\d+\s*мин(?:ут[аы]?)?(?=\s|$)/i.test(normalized);
+  const hasMonthYear = /(^|\s)(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}(?=\s|$)/i.test(normalized);
+  const hasCounter = /(^|\s)\d{3,6}(?=\s|$)/.test(normalized);
+  const tokenCount = normalized.split(' ').filter((token) => token.length > 0).length;
+
+  if (hasReadTime && (hasMonthYear || hasCounter)) {
+    return true;
+  }
+
+  if (hasMonthYear && hasCounter && tokenCount <= 9) {
+    return true;
+  }
+
+  return false;
+}
+
+function stripRuDateAndReadTimeMarkers(text: string): string {
+  return text
+    .replace(/(^|\s)\d+\s*мин(?:ут[аы]?)?(?=\s|$)/gi, ' ')
+    .replace(/(^|\s)\d{1,2}\s*(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)(?:\s+\d{4})?(?=\s|$)/gi, ' ')
+    .replace(/(^|\s)(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}(?=\s|$)/gi, ' ')
+    .replace(/(^|\s)\d{4}\s*г\.?(?=\s|$)/gi, ' ');
 }
 
 function normalizePdfLineKey(line: string): string {
