@@ -92,21 +92,30 @@ export class GenerationService implements GenerationModule {
         return bestCandidate;
       }
 
-      const emergencyCandidate = await this.runEmergencyFallbackPass(
+      let emergencyCandidate = await this.runEmergencyFallbackPass(
         sourceText,
         finalEdited.length >= bestCandidate.length ? finalEdited : bestCandidate,
         lengthRange,
         coveragePlan
       );
-      if (isSafeManualAdaptationForFallback(emergencyCandidate, lengthRange)) {
+      if (hasExcessiveSourceOverlap(sourceText, emergencyCandidate)) {
+        emergencyCandidate = await this.runMandatoryAntiOverlapPass(
+          sourceText,
+          emergencyCandidate,
+          lengthRange,
+          coveragePlan
+        );
+      }
+
+      if (isSafeManualAdaptationForFallback(sourceText, emergencyCandidate, lengthRange)) {
         return emergencyCandidate;
       }
 
-      if (isSafeManualAdaptationForFallback(finalEdited, lengthRange)) {
+      if (isSafeManualAdaptationForFallback(sourceText, finalEdited, lengthRange)) {
         return finalEdited;
       }
 
-      if (isSafeManualAdaptationForFallback(bestCandidate, lengthRange)) {
+      if (isSafeManualAdaptationForFallback(sourceText, bestCandidate, lengthRange)) {
         return bestCandidate;
       }
     } catch {
@@ -188,6 +197,16 @@ export class GenerationService implements GenerationModule {
     coveragePlan: ManualCoveragePlan
   ): Promise<string> {
     const prompt = buildManualEmergencyFallbackPrompt(sourceText, candidateText, lengthRange, coveragePlan);
+    return normalizeManualCandidateText(await this.generateNonEmpty(prompt));
+  }
+
+  private async runMandatoryAntiOverlapPass(
+    sourceText: string,
+    candidateText: string,
+    lengthRange: { minLength: number; maxLength: number },
+    coveragePlan: ManualCoveragePlan
+  ): Promise<string> {
+    const prompt = buildManualAntiOverlapPrompt(sourceText, candidateText, lengthRange, coveragePlan);
     return normalizeManualCandidateText(await this.generateNonEmpty(prompt));
   }
 
@@ -1037,6 +1056,36 @@ function buildManualEmergencyFallbackPrompt(
   ].join('\n');
 }
 
+function buildManualAntiOverlapPrompt(
+  sourceText: string,
+  candidateText: string,
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
+): string {
+  const coverageItems = coveragePlan.mandatoryItems.slice(0, 16);
+  return [
+    'ОБЯЗАТЕЛЬНАЯ ПЕРЕПИСЬ ТЕКСТА БЕЗ КОПИПАСТА.',
+    'Текущий вариант слишком близок к исходнику по формулировкам.',
+    `Диапазон объема: ${Math.floor(lengthRange.minLength * 0.8)}-${lengthRange.maxLength} символов.`,
+    '',
+    'Жесткие условия:',
+    '— полностью перефразируй формулировки;',
+    '— не копируй длинные предложения из исходника;',
+    '— сохрани факты, ограничения и практические рекомендации;',
+    '— убери мета-блоки и служебные вставки;',
+    '— без markdown и без комментариев.',
+    '',
+    'ОБЯЗАТЕЛЬНЫЕ ПУНКТЫ ПОКРЫТИЯ:',
+    ...coverageItems.map((item, index) => `${index + 1}. ${item}`),
+    '',
+    'ИСХОДНИК:',
+    sourceText,
+    '',
+    'ТЕКУЩИЙ ВАРИАНТ (ЕГО НУЖНО ПЕРЕПИСАТЬ):',
+    candidateText
+  ].join('\n');
+}
+
 function buildManualCoveragePlanPrompt(sourceText: string, sourceItems: string[]): string {
   return [
     'Собери coverage-план для адаптации экспертной статьи про собак.',
@@ -1202,6 +1251,7 @@ function isAcceptableManualAdaptation(
     !endsWithIncompleteThought(text) &&
     !hasRawPdfLayoutArtifacts(text) &&
     !hasResidualMetadataMarkers(text) &&
+    !hasLeadMetadataLeakage(text) &&
     !hasExcessiveSourceOverlap(sourceText, text) &&
     !hasInsufficientCoverage(text, coveragePlan)
   );
@@ -1461,6 +1511,11 @@ function applyManualQualityHeuristics(
     issues.push('Остались мета-маркеры (Авторы/Введение/email/счетчики чтения).');
   }
 
+  if (hasLeadMetadataLeakage(candidateText)) {
+    score = Math.min(score, 4);
+    issues.push('В начале текста остались признаки сырого PDF-метаданных (лид не очищен).');
+  }
+
   if (hasExcessiveSourceOverlap(sourceText, candidateText)) {
     score = Math.min(score, 5);
     issues.push('Текст слишком близок к исходнику и выглядит как копипаст.');
@@ -1480,13 +1535,16 @@ function applyManualQualityHeuristics(
 }
 
 function normalizeManualCandidateText(text: string): string {
-  let normalized = text
+  const normalizedLines = stripLeadingManualMetadataLines(
+    text
     .split('\n')
     .map((line) => collapseRepeatedIntroChunk(line.trim()))
     .filter((line) => line.length > 0)
     .filter((line) => !isManualNoiseLine(line))
     .filter((line) => !isManualMetadataLine(line))
-    .join('\n');
+  );
+
+  let normalized = normalizedLines.join('\n');
 
   normalized = stripRuDateAndReadTimeMarkers(
     normalized
@@ -1497,6 +1555,45 @@ function normalizeManualCandidateText(text: string): string {
     .trim();
 
   return dedupeConsecutiveLines(normalized);
+}
+
+function stripLeadingManualMetadataLines(lines: string[]): string[] {
+  let start = 0;
+  const maxLeadScan = Math.min(lines.length, 14);
+  while (start < maxLeadScan) {
+    const line = lines[start];
+    if (!line || !isManualLeadMetadataLine(line)) {
+      break;
+    }
+    start += 1;
+  }
+
+  return lines.slice(start);
+}
+
+function isManualLeadMetadataLine(line: string): boolean {
+  const normalized = line.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (normalized.length === 0) {
+    return true;
+  }
+
+  if (
+    /\bавторы?\b/u.test(normalized) ||
+    /\bоглавление\b/u.test(normalized) ||
+    /\bвведение\b/u.test(normalized)
+  ) {
+    return true;
+  }
+
+  if (/^--\s*\d+\s+of\s+\d+\s*--$/i.test(normalized)) {
+    return true;
+  }
+
+  if (/(^|\s)\d{3,6}(?=\s|$)/.test(normalized) && normalized.length <= 30) {
+    return true;
+  }
+
+  return false;
 }
 
 function dedupeConsecutiveLines(text: string): string {
@@ -1569,6 +1666,46 @@ function hasResidualMetadataMarkers(text: string): boolean {
   });
 }
 
+function hasLeadMetadataLeakage(text: string): boolean {
+  return countLeadMetadataSignals(text) > 2;
+}
+
+function countLeadMetadataSignals(text: string): number {
+  const lead = text.slice(0, 500).toLowerCase().replace(/\s+/g, ' ').trim();
+  if (lead.length === 0) {
+    return 0;
+  }
+
+  let signals = 0;
+  if (/\bавторы?\b/u.test(lead)) {
+    signals += 1;
+  }
+  if (/\bоглавление\b/u.test(lead)) {
+    signals += 1;
+  }
+  if (/\bвведение\b/u.test(lead)) {
+    signals += 1;
+  }
+  if (/(^|\s)\d{3,6}(?=\s|$)/.test(lead)) {
+    signals += 1;
+  }
+
+  const leadNoisePhrases = [
+    'главная заводчикам',
+    'обучение заводчиков',
+    'статьи /',
+    'поиск по сайту',
+    'похожие статьи'
+  ];
+  for (const phrase of leadNoisePhrases) {
+    if (lead.includes(phrase)) {
+      signals += 1;
+    }
+  }
+
+  return signals;
+}
+
 function hasExcessiveSourceOverlap(sourceText: string, candidateText: string): boolean {
   const shingleOverlap = calculateShingleContainment(sourceText, candidateText, 8);
   if (shingleOverlap >= MANUAL_MAX_SHINGLE_OVERLAP) {
@@ -1637,6 +1774,7 @@ function buildManualDeterministicFallback(
 }
 
 function isSafeManualAdaptationForFallback(
+  sourceText: string,
   text: string,
   lengthRange: { minLength: number; maxLength: number }
 ): boolean {
@@ -1646,6 +1784,8 @@ function isSafeManualAdaptationForFallback(
     !looksLikeModelRefusal(text) &&
     !containsManualGarbage(text) &&
     !hasResidualMetadataMarkers(text) &&
+    !hasLeadMetadataLeakage(text) &&
+    !hasExcessiveSourceOverlap(sourceText, text) &&
     !hasRawPdfLayoutArtifacts(text) &&
     !endsWithIncompleteThought(text)
   );

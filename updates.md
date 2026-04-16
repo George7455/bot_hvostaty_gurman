@@ -2674,3 +2674,51 @@ User-reported runtime behavior:
 
 Impact:
 `/upload` now degrades gracefully without surfacing terminal adaptation failure to the user and provides periodic in-chat progress feedback during long PDF handling. Compile integrity remains valid (`npm run typecheck`, `npm run build` passed).
+
+## Update 172 — 2026-04-16
+
+File: src/modules/generation/index.ts, progress.md  
+Lines: `src/modules/generation/index.ts` (95-123, 198-214, 1049-1079, 1520-1688, 1772-1787), `progress.md` (168-171)
+
+Change:
+Implemented additional `/upload` anti-copy and lead-cleanliness gates requested after manual review:
+- added mandatory anti-overlap rewrite recovery:
+  - if emergency candidate still has excessive overlap with source, pipeline now executes one more forced anti-copy pass (`runMandatoryAntiOverlapPass` + `buildManualAntiOverlapPrompt`) before fallback acceptance;
+- hardened lead cleanup:
+  - added dedicated leading-line stripper (`stripLeadingManualMetadataLines`) with explicit lead pattern detector (`isManualLeadMetadataLine`) for `авторы|оглавление|введение|\\d{3,6}` and page-counter style lines;
+- added post-check on the first 500 symbols:
+  - introduced `hasLeadMetadataLeakage` / `countLeadMetadataSignals`,
+  - candidate is now rejected when lead metadata signal count is greater than 2;
+- integrated new checks into acceptance and scoring:
+  - `isAcceptableManualAdaptation` now rejects lead-leak texts,
+  - heuristic scoring applies explicit penalty/issue for dirty lead,
+  - `isSafeManualAdaptationForFallback` now also rejects lead-leak and high-overlap candidates.
+Also logged atomic execution steps and reran compile checks.
+
+Reason:
+User feedback on generated draft showed persistent early-fragment noise and near-source copying despite existing gates; required explicit lead-focused filtering and one more mandatory anti-copy rewrite stage.
+
+Impact:
+`/upload` output gate now blocks raw-PDF style lead artifacts more aggressively and reduces chance of near-copy fallback texts entering moderation. Compile integrity remains valid (`npm run typecheck`, `npm run build` passed).
+
+## Update 173 — 2026-04-16
+
+File: progress.md, updates.md  
+Lines: `progress.md` (172-174), `updates.md` (new section)
+
+Change:
+Executed full-project verification and contradiction audit on current repository state:
+- ran compile/data integrity checks:
+  - `npm run typecheck`,
+  - `npm run build`,
+  - `npx prisma validate`;
+- performed static scan for conflicting `/upload` runtime paths and stale strings:
+  - no legacy hard-fail message (`Manual article adaptation did not reach minimal safe quality`) in `src`/`dist`,
+  - no outdated `1-2 минут` ETA string in built runtime,
+  - confirmed latest runtime safeguards are present in `dist` (`buildManualDeterministicFallback`, `startPdfProgressUpdates`, `до 5-7 минут`).
+
+Reason:
+User requested end-to-end confidence check that current build has no obvious failures, contradictions, or stale runtime branches before further use.
+
+Impact:
+Current local build is internally consistent at compile/schema/static-audit level; no immediate contradictions were detected in `/upload` code path under available offline checks.

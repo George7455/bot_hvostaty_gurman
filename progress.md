@@ -165,3 +165,10 @@
 [✓] Step 165 — Removed terminal `/upload` adaptation throw-path in `GenerationService.adaptManualArticleText(...)`; added deterministic fallback return path for quality-gate/AI-failure cases.
 [✓] Step 166 — Added `/upload` long-processing UX heartbeat in Telegram PDF flow (periodic status replies every 90s + updated initial ETA copy).
 [✓] Step 167 — Re-validated compile integrity after fallback+heartbeat update (`npm run typecheck`, `npm run build` passed).
+[✓] Step 168 — Added mandatory anti-overlap recovery pass in `/upload` adaptation flow: when emergency candidate is too close to source, an extra forced rewrite pass now runs before fallback acceptance.
+[✓] Step 169 — Added lead-metadata gates for `/upload` outputs: aggressive lead-line stripping (`авторы/оглавление/введение/\\d{3,6}` patterns) plus first-500-chars signal check (reject when metadata signals >2).
+[✓] Step 170 — Tightened fallback safety acceptance by adding lead-metadata and source-overlap rejection to `isSafeManualAdaptationForFallback(...)`.
+[✓] Step 171 — Re-validated compile integrity after overlap/lead-gate hardening (`npm run typecheck`, `npm run build` passed).
+[✓] Step 172 — Ran full project integrity verification sweep (`npm run typecheck`, `npm run build`, `npx prisma validate`) — all checks passed.
+[✓] Step 173 — Performed static contradiction audit for `/upload` runtime paths (old ETA strings, legacy hard-fail message, coverage/fallback consistency) across source files.
+[✓] Step 174 — Verified built artifacts in `dist` are synchronized with latest `/upload` safeguards (5–7 minute ETA, progress heartbeat, deterministic fallback functions present).
