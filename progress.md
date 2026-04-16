@@ -156,3 +156,9 @@
 [✓] Step 156 — Re-validated compile integrity after fail-safe and threshold rebalance (`npm run typecheck`, `npm run build` passed).
 [✓] Step 157 — Strengthened PDF→TXT normalization before OpenAI: inline metadata stripping, tag-cloud suppression, repeated-phrase collapse, and global duplicate-line removal.
 [✓] Step 158 — Re-validated compile integrity after TXT-stage cleanup hardening (`npm run typecheck`, `npm run build` passed).
+[✓] Step 159 — Re-checked real local PDF extraction (`~/Downloads/Telegram Desktop/file.pdf`) and reproduced residual metadata leakage patterns (`14 мин 5045 апр 2025`, tab-separated navigation fragments).
+[✓] Step 160 — Synchronized `/upload` coverage prompts with runtime gate logic via shared threshold resolver (removed stale hardcoded `78%` target in quality prompts).
+[✓] Step 161 — Hardened date/time cleanup and metadata suppression for Cyrillic text in `generation` + `telegram` (`\\b`-sensitive patterns replaced with whitespace-bound rules; added PDF stat-line detector; added early tail-noise trimming).
+[✓] Step 162 — Added whitespace normalization (`\\s+`) before PDF noise filtering to neutralize tab-delimited artifacts from parser output.
+[✓] Step 163 — Re-validated compile integrity after coverage+filter updates (`npm run typecheck`, `npm run build` passed).
+[✗] Step 164 — Attempted live `GenerationService.adaptManualArticleText(...)` run on real local PDF (`~/Downloads/Telegram Desktop/file.pdf`) via OpenAI, but runtime verification failed in current environment with `Connection error`.

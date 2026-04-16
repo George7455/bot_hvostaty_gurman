@@ -2620,3 +2620,32 @@ User requested to remove PDF garbage and metadata at TXT stage so OpenAI receive
 
 Impact:
 `/upload` now sends cleaner, less repetitive, metadata-stripped text to generation module, improving adaptation stability before AI processing. Compile integrity re-validated (`npm run typecheck`, `npm run build` passed).
+
+## Update 170 — 2026-04-16
+
+File: src/modules/generation/index.ts, src/modules/telegram/index.ts, progress.md  
+Lines: `src/modules/generation/index.ts` (888-970, 1207-1233, 1363-1366, 1476-1492, 1577-1626), `src/modules/telegram/index.ts` (560-745), `progress.md` (159-163)
+
+Change:
+Performed targeted `/upload` quality hardening after local real-PDF diagnostics:
+- removed stale hardcoded coverage text (`78%`) in quality prompts and bound coverage wording to real runtime threshold via shared resolver:
+  - added `resolveCoverageThreshold(...)`,
+  - added `formatCoverageThresholdPercent(...)`,
+  - reused resolver inside `hasInsufficientCoverage(...)` and prompt text generation;
+- replaced Cyrillic-fragile boundary cleanup patterns (`\\b`-based date/time matches) with whitespace-bound patterns in both generation and Telegram preprocessing:
+  - added `stripRuDateAndReadTimeMarkers(...)` in both modules,
+  - routed source/candidate normalization through this helper;
+- strengthened Telegram PDF metadata filtering:
+  - added `looksLikePdfStatLine(...)` to drop compact stat lines (`мин + views + month/year`),
+  - integrated stat-line detection into both noise and metadata filters,
+  - added early tail cutoff (`trimPdfTailNoise(...)`) for related-article blocks before AI handoff;
+- normalized internal whitespace with `\\s+` before phrase-based filtering to neutralize tab-delimited PDF artifacts.
+Also logged atomic execution steps in `progress.md` and re-validated compile integrity.
+
+Reason:
+Real local PDF extraction still showed metadata leakage and prompt/gate mismatch:
+- parser output contained tab-separated navigation fragments and compact stat markers,
+- quality prompts still demanded `78%` while runtime acceptance had lower dynamic threshold, creating inconsistency in rewrite/evaluation behavior.
+
+Impact:
+`/upload` preprocessing and quality-loop instructions are now internally consistent and more robust to real PDF artifacts (Cyrillic date/time markers, compact stat lines, tabbed navigation blocks, related-content tails). Typecheck and build remain green (`npm run typecheck`, `npm run build`).

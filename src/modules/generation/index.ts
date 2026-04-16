@@ -892,6 +892,7 @@ function buildManualQualityEvaluationPrompt(
   coveragePlan: ManualCoveragePlan
 ): string {
   const coverageItems = coveragePlan.mandatoryItems.slice(0, 22);
+  const coverageThresholdPercent = formatCoverageThresholdPercent(coverageItems.length);
 
   return [
     'Оцени качество адаптации для Telegram-поста про собак.',
@@ -910,7 +911,7 @@ function buildManualQualityEvaluationPrompt(
     '9) Нет сырой PDF-верстки: десятков коротких обрывочных строк и заголовков-перечней подряд.',
     '10) Текст не является почти дословной копией исходника (обязательна редакторская переработка).',
     '11) Нет мета-маркеров вроде "Авторы", "Введение", email-адресов и числовых карточек чтения.',
-    '12) Покрыты обязательные пункты содержания из списка ниже (не менее 78%).',
+    `12) Покрыты обязательные пункты содержания из списка ниже (не менее ${coverageThresholdPercent}%).`,
     '',
     'Верни только JSON без комментариев в формате:',
     '{"score": 0-10, "issues": ["..."], "rewrite_plan": "..."}',
@@ -935,6 +936,7 @@ function buildManualQualityImprovementPrompt(
 ): string {
   const issues = quality.issues.length > 0 ? quality.issues.join('; ') : 'критичных замечаний не указано';
   const coverageItems = coveragePlan.mandatoryItems.slice(0, 22);
+  const coverageThresholdPercent = formatCoverageThresholdPercent(coverageItems.length);
 
   return [
     'Перепиши текст и улучши качество до 9/10.',
@@ -955,7 +957,7 @@ function buildManualQualityImprovementPrompt(
     '— восстановить связное последовательное повествование;',
     '— убрать мета-слова ("Авторы", "Введение"), email и технические счетчики;',
     '— не копировать исходник дословно: нужна полноценная редакторская переработка;',
-    '— включить все обязательные пункты из списка покрытия (не меньше 78%);',
+    `— включить все обязательные пункты из списка покрытия (не меньше ${coverageThresholdPercent}%);`,
     '— без markdown, без отказных фраз, без воды.',
     '',
     'ОБЯЗАТЕЛЬНЫЕ ПУНКТЫ ПОКРЫТИЯ:',
@@ -1213,13 +1215,13 @@ function sanitizeManualSourceText(articleText: string): string {
     .replace(/бесплатная\s+горячая\s+линия/gi, ' ')
     .replace(/написать\s+нам\s+[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, ' ')
     .replace(/используемая\s+литература/gi, ' ')
-    .replace(/https?:\/\/\S+/gi, ' ')
-    .replace(/\b\d{1,2}\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\b\.?/gi, ' ')
-    .replace(/\b\d{4}\s*г\.?\b/gi, ' ');
+    .replace(/https?:\/\/\S+/gi, ' ');
+
+  text = stripRuDateAndReadTimeMarkers(text);
 
   text = text
     .split('\n')
-    .map((line) => line.trim())
+    .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter((line) => line.length > 0)
     .filter((line) => !isManualNoiseLine(line))
     .join('\n');
@@ -1362,7 +1364,7 @@ function trimManualTailNoise(text: string): string {
 
 function containsDateTailNoise(text: string): boolean {
   const tail = text.slice(Math.max(0, text.length - 600)).toLowerCase();
-  return /\b(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}\b/i.test(tail);
+  return /(^|\s)(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}(?=\s|$)/i.test(tail);
 }
 
 function hasDuplicateAdjacentFragments(text: string): boolean {
@@ -1482,11 +1484,10 @@ function normalizeManualCandidateText(text: string): string {
     .filter((line) => !isManualMetadataLine(line))
     .join('\n');
 
-  normalized = normalized
-    .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, ' ')
-    .replace(/\b\d+\s*мин(ут[аы]?)?\b/gi, ' ')
-    .replace(/\b(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}\b/gi, ' ')
-    .replace(/\b\d{1,2}\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\b\.?/gi, ' ')
+  normalized = stripRuDateAndReadTimeMarkers(
+    normalized
+      .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, ' ')
+  )
     .replace(/\s{2,}/g, ' ')
     .replace(/(?:\n\s*){3,}/g, '\n\n')
     .trim();
@@ -1583,14 +1584,33 @@ function hasInsufficientCoverage(candidateText: string, coveragePlan: ManualCove
   const normalizedCandidate = normalizeOverlapText(candidateText);
   const covered = mandatoryItems.filter((item) => isCoverageItemPresent(normalizedCandidate, item)).length;
   const ratio = covered / mandatoryItems.length;
-  const threshold =
-    mandatoryItems.length >= 12
-      ? Math.max(0.58, MANUAL_MIN_COVERAGE_RATIO - 0.05)
-      : mandatoryItems.length >= 8
-        ? MANUAL_MIN_COVERAGE_RATIO
-        : 0.6;
+  const threshold = resolveCoverageThreshold(mandatoryItems.length);
 
   return ratio < threshold;
+}
+
+function resolveCoverageThreshold(mandatoryItemsCount: number): number {
+  if (mandatoryItemsCount >= 12) {
+    return Math.max(0.58, MANUAL_MIN_COVERAGE_RATIO - 0.05);
+  }
+
+  if (mandatoryItemsCount >= 8) {
+    return MANUAL_MIN_COVERAGE_RATIO;
+  }
+
+  return 0.6;
+}
+
+function formatCoverageThresholdPercent(mandatoryItemsCount: number): number {
+  return Math.round(resolveCoverageThreshold(mandatoryItemsCount) * 100);
+}
+
+function stripRuDateAndReadTimeMarkers(text: string): string {
+  return text
+    .replace(/(^|\s)\d+\s*мин(?:ут[аы]?)?(?=\s|$)/gi, ' ')
+    .replace(/(^|\s)\d{1,2}\s*(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)(?:\s+\d{4})?(?=\s|$)/gi, ' ')
+    .replace(/(^|\s)(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}(?=\s|$)/gi, ' ')
+    .replace(/(^|\s)\d{4}\s*г\.?(?=\s|$)/gi, ' ');
 }
 
 function isSafeManualAdaptationForFallback(
