@@ -151,3 +151,8 @@
 [✓] Step 151 — Added two-stage `/upload` adaptation control: pre-generation JSON coverage plan + mandatory coverage propagation across base/expansion/rescue/final rewrite prompts.
 [✓] Step 152 — Added deterministic coverage gate (mandatory item coverage ratio) and integrated it into acceptance + quality scoring to prevent over-short/under-complete adaptations.
 [✓] Step 153 — Lowered Telegraph direct-post threshold to 2200 chars so long manual drafts are routed to Telegraph earlier; re-validated (`npm run typecheck`, `npm run build` passed).
+[✓] Step 154 — Added fail-safe completion path for `/upload`: emergency fallback rewrite + safe-candidate delivery instead of immediate hard-fail on strict gate miss.
+[✓] Step 155 — Rebalanced completeness strictness: lowered base coverage ratio and reduced mandatory coverage list size to avoid false-negative rejects on large PDFs.
+[✓] Step 156 — Re-validated compile integrity after fail-safe and threshold rebalance (`npm run typecheck`, `npm run build` passed).
+[✓] Step 157 — Strengthened PDF→TXT normalization before OpenAI: inline metadata stripping, tag-cloud suppression, repeated-phrase collapse, and global duplicate-line removal.
+[✓] Step 158 — Re-validated compile integrity after TXT-stage cleanup hardening (`npm run typecheck`, `npm run build` passed).

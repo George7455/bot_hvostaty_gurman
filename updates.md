@@ -2578,3 +2578,45 @@ User-reported regression: adapted `/upload` draft became too short and incomplet
 
 Impact:
 `/upload` adaptation now prioritizes both cleanliness and factual completeness; key source blocks are enforced by coverage plan and rejected when omitted. Longer adapted drafts now more consistently publish via Telegraph rather than plain in-chat wall-of-text. Compile integrity re-validated (`npm run typecheck`, `npm run build` passed).
+
+## Update 168 — 2026-04-16
+
+File: src/modules/generation/index.ts, progress.md  
+Lines: `src/modules/generation/index.ts` (7, 96-112, 185-188, 1005-1032, 1108-1110, 1578-1610), `progress.md` (154-156)
+
+Change:
+Removed strict `/upload` hard-stop behavior that surfaced user-facing adaptation failure and replaced it with fail-safe delivery logic:
+- lowered base coverage threshold constant from `0.78` to `0.65`,
+- reduced merged mandatory coverage list cap from `24` to `16` items to avoid infeasible coverage targets on large heterogeneous PDFs,
+- added emergency fallback rewrite stage (`buildManualEmergencyFallbackPrompt` + `runEmergencyFallbackPass`) for final attempt before failure,
+- added safe fallback acceptance check (`isSafeManualAdaptationForFallback`) that allows delivery of best cleaned candidate when strict gate misses but core safety/readability constraints are met,
+- updated final failure message path from strict publish-ready miss to minimal-safe miss.
+Also logged execution and verification in `progress.md`.
+
+Reason:
+User-reported runtime error after `/upload`: `Manual article adaptation did not reach publish-ready quality.` The strict completeness gate caused false-negative rejects and blocked delivery entirely.
+
+Impact:
+`/upload` now degrades gracefully: when strict quality target is not met, system still returns a sanitized, coherent draft instead of aborting. This preserves user flow while keeping hard filters for refusal/garbage/raw-PDF artifacts. Compile integrity re-validated (`npm run typecheck`, `npm run build` passed).
+
+## Update 169 — 2026-04-16
+
+File: src/modules/telegram/index.ts, progress.md  
+Lines: `src/modules/telegram/index.ts` (560-753, 600-653), `progress.md` (157-158)
+
+Change:
+Strengthened PDF→TXT preprocessing before OpenAI handoff in Telegram upload flow:
+- expanded inline cleanup (`cleanInlinePdfArtifacts`) to remove embedded emails, month-year/date stamps, and reading-time fragments,
+- added metadata-only line filtering (`isPdfLikelyMetadataLine`) for author/contents/page/table markers and heading-cascade patterns,
+- added tag-cloud detector (`isLikelyTagCloudLine`) to drop SEO-like keyword tails,
+- replaced adjacent-only dedupe with global line deduplication keyed by normalized content (`normalizePdfLineKey`),
+- added repeated-phrase collapse in single lines (`collapseLineRepetition`) to remove artifacts like duplicated phrase chunks,
+- extended normalization noise phrase list (contact-related markers, extra metadata tokens),
+- kept final flattening but with punctuation-space normalization before AI prompt handoff.
+Also logged execution and verification steps in `progress.md`.
+
+Reason:
+User requested to remove PDF garbage and metadata at TXT stage so OpenAI receives cleaner source text directly, reducing downstream hallucinations and contamination.
+
+Impact:
+`/upload` now sends cleaner, less repetitive, metadata-stripped text to generation module, improving adaptation stability before AI processing. Compile integrity re-validated (`npm run typecheck`, `npm run build` passed).
