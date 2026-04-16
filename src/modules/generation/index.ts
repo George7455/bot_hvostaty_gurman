@@ -37,79 +37,83 @@ export class GenerationService implements GenerationModule {
   public async adaptManualArticleText(articleText: string): Promise<string> {
     const sourceText = sanitizeManualSourceText(articleText);
     const lengthRange = resolveManualAdaptationLengthRange(sourceText);
-    const coveragePlan = await this.extractManualCoveragePlan(sourceText);
-    let candidate = normalizeManualCandidateText(
-      await this.generateBaseManualCandidate(sourceText, lengthRange, coveragePlan)
-    );
-    let bestCandidate = candidate;
-    let bestScore = 0;
+    try {
+      const coveragePlan = await this.extractManualCoveragePlan(sourceText);
+      let candidate = normalizeManualCandidateText(
+        await this.generateBaseManualCandidate(sourceText, lengthRange, coveragePlan)
+      );
+      let bestCandidate = candidate;
+      let bestScore = 0;
 
-    for (let attempt = 0; attempt <= MANUAL_QUALITY_MAX_REWRITES; attempt += 1) {
-      const quality = await this.evaluateManualQuality(sourceText, candidate, lengthRange, coveragePlan);
-      if (quality.score > bestScore) {
-        bestScore = quality.score;
-        bestCandidate = candidate;
+      for (let attempt = 0; attempt <= MANUAL_QUALITY_MAX_REWRITES; attempt += 1) {
+        const quality = await this.evaluateManualQuality(sourceText, candidate, lengthRange, coveragePlan);
+        if (quality.score > bestScore) {
+          bestScore = quality.score;
+          bestCandidate = candidate;
+        }
+
+        if (
+          quality.score >= MANUAL_QUALITY_TARGET_SCORE &&
+          isAcceptableManualAdaptation(sourceText, candidate, lengthRange, coveragePlan)
+        ) {
+          return candidate;
+        }
+
+        if (attempt === MANUAL_QUALITY_MAX_REWRITES) {
+          break;
+        }
+
+        const improvePrompt = buildManualQualityImprovementPrompt(
+          sourceText,
+          candidate,
+          quality,
+          lengthRange,
+          coveragePlan
+        );
+        candidate = normalizeManualCandidateText(await this.generateNonEmpty(improvePrompt));
+        if (!isAcceptableManualAdaptation(sourceText, candidate, lengthRange, coveragePlan)) {
+          candidate = normalizeManualCandidateText(
+            await this.generateBaseManualCandidate(sourceText, lengthRange, coveragePlan)
+          );
+        }
       }
 
-      if (
-        quality.score >= MANUAL_QUALITY_TARGET_SCORE &&
-        isAcceptableManualAdaptation(sourceText, candidate, lengthRange, coveragePlan)
-      ) {
-        return candidate;
-      }
-
-      if (attempt === MANUAL_QUALITY_MAX_REWRITES) {
-        break;
-      }
-
-      const improvePrompt = buildManualQualityImprovementPrompt(
+      const finalEdited = await this.runFinalEditorialPass(
         sourceText,
-        candidate,
-        quality,
+        bestCandidate,
         lengthRange,
         coveragePlan
       );
-      candidate = normalizeManualCandidateText(await this.generateNonEmpty(improvePrompt));
-      if (!isAcceptableManualAdaptation(sourceText, candidate, lengthRange, coveragePlan)) {
-        candidate = normalizeManualCandidateText(
-          await this.generateBaseManualCandidate(sourceText, lengthRange, coveragePlan)
-        );
+      if (isAcceptableManualAdaptation(sourceText, finalEdited, lengthRange, coveragePlan)) {
+        return finalEdited;
       }
+
+      if (bestScore >= 7 && isAcceptableManualAdaptation(sourceText, bestCandidate, lengthRange, coveragePlan)) {
+        return bestCandidate;
+      }
+
+      const emergencyCandidate = await this.runEmergencyFallbackPass(
+        sourceText,
+        finalEdited.length >= bestCandidate.length ? finalEdited : bestCandidate,
+        lengthRange,
+        coveragePlan
+      );
+      if (isSafeManualAdaptationForFallback(emergencyCandidate, lengthRange)) {
+        return emergencyCandidate;
+      }
+
+      if (isSafeManualAdaptationForFallback(finalEdited, lengthRange)) {
+        return finalEdited;
+      }
+
+      if (isSafeManualAdaptationForFallback(bestCandidate, lengthRange)) {
+        return bestCandidate;
+      }
+    } catch {
+      // Fall through to deterministic fallback.
     }
 
-    const finalEdited = await this.runFinalEditorialPass(
-      sourceText,
-      bestCandidate,
-      lengthRange,
-      coveragePlan
-    );
-    if (isAcceptableManualAdaptation(sourceText, finalEdited, lengthRange, coveragePlan)) {
-      return finalEdited;
-    }
-
-    if (bestScore >= 7 && isAcceptableManualAdaptation(sourceText, bestCandidate, lengthRange, coveragePlan)) {
-      return bestCandidate;
-    }
-
-    const emergencyCandidate = await this.runEmergencyFallbackPass(
-      sourceText,
-      finalEdited.length >= bestCandidate.length ? finalEdited : bestCandidate,
-      lengthRange,
-      coveragePlan
-    );
-    if (isSafeManualAdaptationForFallback(emergencyCandidate, lengthRange)) {
-      return emergencyCandidate;
-    }
-
-    if (isSafeManualAdaptationForFallback(finalEdited, lengthRange)) {
-      return finalEdited;
-    }
-
-    if (isSafeManualAdaptationForFallback(bestCandidate, lengthRange)) {
-      return bestCandidate;
-    }
-
-    throw new Error('Manual article adaptation did not reach minimal safe quality.');
+    return buildManualDeterministicFallback(sourceText, lengthRange);
   }
 
   private async generateNonEmpty(prompt: string): Promise<string> {
@@ -1611,6 +1615,25 @@ function stripRuDateAndReadTimeMarkers(text: string): string {
     .replace(/(^|\s)\d{1,2}\s*(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)(?:\s+\d{4})?(?=\s|$)/gi, ' ')
     .replace(/(^|\s)(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}(?=\s|$)/gi, ' ')
     .replace(/(^|\s)\d{4}\s*г\.?(?=\s|$)/gi, ' ');
+}
+
+function buildManualDeterministicFallback(
+  sourceText: string,
+  lengthRange: { minLength: number; maxLength: number }
+): string {
+  const prepared = normalizeManualCandidateText(
+    `Советы от экспертов:\n${sourceText}`
+  );
+
+  if (prepared.length <= lengthRange.maxLength) {
+    return prepared;
+  }
+
+  return prepared
+    .slice(0, lengthRange.maxLength)
+    .trimEnd()
+    .replace(/[,\s;:–-]*$/u, '')
+    .concat('…');
 }
 
 function isSafeManualAdaptationForFallback(

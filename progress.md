@@ -162,3 +162,6 @@
 [✓] Step 162 — Added whitespace normalization (`\\s+`) before PDF noise filtering to neutralize tab-delimited artifacts from parser output.
 [✓] Step 163 — Re-validated compile integrity after coverage+filter updates (`npm run typecheck`, `npm run build` passed).
 [✗] Step 164 — Attempted live `GenerationService.adaptManualArticleText(...)` run on real local PDF (`~/Downloads/Telegram Desktop/file.pdf`) via OpenAI, but runtime verification failed in current environment with `Connection error`.
+[✓] Step 165 — Removed terminal `/upload` adaptation throw-path in `GenerationService.adaptManualArticleText(...)`; added deterministic fallback return path for quality-gate/AI-failure cases.
+[✓] Step 166 — Added `/upload` long-processing UX heartbeat in Telegram PDF flow (periodic status replies every 90s + updated initial ETA copy).
+[✓] Step 167 — Re-validated compile integrity after fallback+heartbeat update (`npm run typecheck`, `npm run build` passed).

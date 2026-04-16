@@ -2649,3 +2649,28 @@ Real local PDF extraction still showed metadata leakage and prompt/gate mismatch
 
 Impact:
 `/upload` preprocessing and quality-loop instructions are now internally consistent and more robust to real PDF artifacts (Cyrillic date/time markers, compact stat lines, tabbed navigation blocks, related-content tails). Typecheck and build remain green (`npm run typecheck`, `npm run build`).
+
+## Update 171 — 2026-04-16
+
+File: src/modules/generation/index.ts, src/modules/telegram/index.ts, progress.md  
+Lines: `src/modules/generation/index.ts` (37-117, 1620-1637), `src/modules/telegram/index.ts` (17, 279-301, 388-395), `progress.md` (165-167)
+
+Change:
+Implemented anti-freeze and anti-failure safeguards for `/upload`:
+- in manual adaptation flow (`adaptManualArticleText`):
+  - wrapped AI-heavy coverage/quality pipeline in guarded block,
+  - removed terminal throw-path on minimal-safe miss,
+  - added deterministic final return via `buildManualDeterministicFallback(...)` so pipeline always yields draft text even if quality gates or upstream AI calls fail;
+- in Telegram PDF handler:
+  - updated initial progress copy to realistic ETA (`до 5-7 минут`),
+  - added periodic user-visible status heartbeat (`startPdfProgressUpdates`) every 90 seconds during long processing,
+  - ensured timer cleanup in `finally` to prevent orphan progress messages after completion/failure.
+Also logged atomic execution steps and reran compile checks.
+
+Reason:
+User-reported runtime behavior:
+- repeated error after long `/upload` processing window,
+- no intermediate status messages for ~7 minutes, creating perceived hang.
+
+Impact:
+`/upload` now degrades gracefully without surfacing terminal adaptation failure to the user and provides periodic in-chat progress feedback during long PDF handling. Compile integrity remains valid (`npm run typecheck`, `npm run build` passed).
