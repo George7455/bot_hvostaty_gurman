@@ -570,28 +570,30 @@ function normalizePdfTextForAi(rawText: string): string {
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .filter((line) => !isPdfNormalizationNoiseLine(line));
+    .map((line) => cleanInlinePdfArtifacts(collapseLineRepetition(line)))
+    .map((line) => line.replace(/\s{2,}/g, ' ').trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !isPdfNormalizationNoiseLine(line))
+    .filter((line) => !isPdfLikelyMetadataLine(line));
 
-  // Drop exact adjacent duplicates from PDF navigation/header fragments.
+  // Drop duplicates globally (not only adjacent) to suppress repeated headers/cards.
   const deduped: string[] = [];
+  const seen = new Set<string>();
   for (const line of lines) {
-    const normalized = line.toLowerCase().replace(/\s+/g, ' ').trim();
-    const previous = deduped[deduped.length - 1];
-    if (!previous) {
-      deduped.push(line);
+    const normalized = normalizePdfLineKey(line);
+    if (normalized.length < 4 || seen.has(normalized)) {
       continue;
     }
-
-    const previousNormalized = previous.toLowerCase().replace(/\s+/g, ' ').trim();
-    if (normalized === previousNormalized) {
-      continue;
-    }
-
+    seen.add(normalized);
     deduped.push(line);
   }
 
   // Flatten hard wraps from PDF layout to sentence-friendly text for generation.
-  const flattened = deduped.join(' ').replace(/\s+/g, ' ').trim();
+  const flattened = deduped
+    .join(' ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .trim();
   return flattened;
 }
 
@@ -610,6 +612,10 @@ function isPdfNormalizationNoiseLine(line: string): boolean {
   }
 
   if (/^\d+\s*(мин|m(in)?)(\s+\d+)?$/i.test(normalized)) {
+    return true;
+  }
+
+  if (/^\d+\s*$/.test(normalized)) {
     return true;
   }
 
@@ -632,7 +638,11 @@ function isPdfNormalizationNoiseLine(line: string): boolean {
     'главная заводчикам',
     'обучение заводчиков',
     'статьи /',
-    'дрессировка и спорт ркф'
+    'дрессировка и спорт ркф',
+    'contact',
+    '@royalcanin',
+    'авторы',
+    'введение'
   ];
 
   if (noisePhrases.some((phrase) => normalized.includes(phrase))) {
@@ -640,6 +650,105 @@ function isPdfNormalizationNoiseLine(line: string): boolean {
   }
 
   return /^https?:\/\//i.test(normalized);
+}
+
+function isPdfLikelyMetadataLine(line: string): boolean {
+  const normalized = line.toLowerCase().trim();
+
+  if (/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(normalized)) {
+    return true;
+  }
+
+  if (/^(авторы?|author|оглавление|contents|содержание|введение)$/i.test(normalized)) {
+    return true;
+  }
+
+  if (/^(стр|page)\.?\s*\d+$/i.test(normalized)) {
+    return true;
+  }
+
+  if (/^(рис|табл)\.?\s*\d+$/i.test(normalized)) {
+    return true;
+  }
+
+  if (
+    !/[.!?;:]/.test(line) &&
+    (line.match(/\([^)]+\)/g)?.length ?? 0) >= 4 &&
+    line.length > 70
+  ) {
+    return true;
+  }
+
+  return isLikelyTagCloudLine(line);
+}
+
+function isLikelyTagCloudLine(line: string): boolean {
+  if (/[.!?;:]/.test(line)) {
+    return false;
+  }
+
+  const tokens = line
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
+  if (tokens.length < 6) {
+    return false;
+  }
+
+  const keywordMatches = tokens.filter((token) =>
+    /(собак|щенок|здоров|уход|развит|адаптац|дрессиров|тест)/i.test(token)
+  ).length;
+  const mostlyShort = tokens.filter((token) => token.length <= 14).length / tokens.length > 0.9;
+  return keywordMatches >= 3 && mostlyShort;
+}
+
+function cleanInlinePdfArtifacts(line: string): string {
+  return line
+    .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, ' ')
+    .replace(/\b\d+\s*мин(ут[аы]?)?\b/gi, ' ')
+    .replace(/\b\d{1,2}\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s*\d{4}\b/gi, ' ')
+    .replace(/\b(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}\b/gi, ' ')
+    .replace(/\b\d{4}\s*г\.?\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function normalizePdfLineKey(line: string): string {
+  return line
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function collapseLineRepetition(line: string): string {
+  const words = line.split(/\s+/).filter((word) => word.length > 0);
+  if (words.length < 6) {
+    return line;
+  }
+
+  for (let chunkSize = 2; chunkSize <= Math.min(8, Math.floor(words.length / 2)); chunkSize += 1) {
+    for (let index = 0; index + chunkSize * 2 <= words.length; index += 1) {
+      let equal = true;
+      for (let offset = 0; offset < chunkSize; offset += 1) {
+        const left = words[index + offset];
+        const right = words[index + chunkSize + offset];
+        if (!left || !right || left.toLowerCase() !== right.toLowerCase()) {
+          equal = false;
+          break;
+        }
+      }
+      if (equal) {
+        const collapsed = [
+          ...words.slice(0, index + chunkSize),
+          ...words.slice(index + chunkSize * 2)
+        ];
+        return collapsed.join(' ');
+      }
+    }
+  }
+
+  return line;
 }
 
 function buildClickworthyTitle(text: string): string {

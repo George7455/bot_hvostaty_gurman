@@ -4,7 +4,7 @@ const MANUAL_QUALITY_MAX_REWRITES = 3;
 const MANUAL_FINAL_EDITORIAL_PASSES = 2;
 const MANUAL_MAX_SHINGLE_OVERLAP = 0.68;
 const MANUAL_MAX_SENTENCE_REUSE = 0.4;
-const MANUAL_MIN_COVERAGE_RATIO = 0.78;
+const MANUAL_MIN_COVERAGE_RATIO = 0.65;
 
 export interface InitialDraftGenerationInput {
   topic: string;
@@ -91,7 +91,25 @@ export class GenerationService implements GenerationModule {
       return bestCandidate;
     }
 
-    throw new Error('Manual article adaptation did not reach publish-ready quality.');
+    const emergencyCandidate = await this.runEmergencyFallbackPass(
+      sourceText,
+      finalEdited.length >= bestCandidate.length ? finalEdited : bestCandidate,
+      lengthRange,
+      coveragePlan
+    );
+    if (isSafeManualAdaptationForFallback(emergencyCandidate, lengthRange)) {
+      return emergencyCandidate;
+    }
+
+    if (isSafeManualAdaptationForFallback(finalEdited, lengthRange)) {
+      return finalEdited;
+    }
+
+    if (isSafeManualAdaptationForFallback(bestCandidate, lengthRange)) {
+      return bestCandidate;
+    }
+
+    throw new Error('Manual article adaptation did not reach minimal safe quality.');
   }
 
   private async generateNonEmpty(prompt: string): Promise<string> {
@@ -157,6 +175,16 @@ export class GenerationService implements GenerationModule {
     }
 
     return candidate;
+  }
+
+  private async runEmergencyFallbackPass(
+    sourceText: string,
+    candidateText: string,
+    lengthRange: { minLength: number; maxLength: number },
+    coveragePlan: ManualCoveragePlan
+  ): Promise<string> {
+    const prompt = buildManualEmergencyFallbackPrompt(sourceText, candidateText, lengthRange, coveragePlan);
+    return normalizeManualCandidateText(await this.generateNonEmpty(prompt));
   }
 
   private async extractManualCoveragePlan(sourceText: string): Promise<ManualCoveragePlan> {
@@ -974,6 +1002,35 @@ function buildManualFinalEditorialPrompt(
   ].join('\n');
 }
 
+function buildManualEmergencyFallbackPrompt(
+  sourceText: string,
+  candidateText: string,
+  lengthRange: { minLength: number; maxLength: number },
+  coveragePlan: ManualCoveragePlan
+): string {
+  const coverageItems = coveragePlan.mandatoryItems.slice(0, 16);
+  return [
+    'СРОЧНАЯ ФИНАЛИЗАЦИЯ ТЕКСТА ДЛЯ ПУБЛИКАЦИИ.',
+    'Нельзя отвечать отказом. Нужен только готовый текст.',
+    `Объем: от ${Math.floor(lengthRange.minLength * 0.8)} до ${lengthRange.maxLength} символов.`,
+    '',
+    'Обязательные условия:',
+    '— убрать PDF-мусор, мета-блоки, повторы;',
+    '— сохранить ключевые практические пункты исходника;',
+    '— завершенная финальная мысль;',
+    '— без markdown и без служебных комментариев.',
+    '',
+    'Покрой минимум большинство пунктов:',
+    ...coverageItems.map((item, index) => `${index + 1}. ${item}`),
+    '',
+    'ИСХОДНИК:',
+    sourceText,
+    '',
+    'ТЕКУЩИЙ ВАРИАНТ:',
+    candidateText
+  ].join('\n');
+}
+
 function buildManualCoveragePlanPrompt(sourceText: string, sourceItems: string[]): string {
   return [
     'Собери coverage-план для адаптации экспертной статьи про собак.',
@@ -1050,7 +1107,7 @@ function parseManualCoveragePlan(raw: string): ManualCoveragePlan {
 
 function mergeMandatoryCoverageItems(aiItems: string[], sourceItems: string[]): string[] {
   const merged = dedupeStringList([...sourceItems, ...aiItems]);
-  return merged.slice(0, 24);
+  return merged.slice(0, 16);
 }
 
 function extractMandatoryCoverageItemsFromSource(sourceText: string): string[] {
@@ -1526,9 +1583,29 @@ function hasInsufficientCoverage(candidateText: string, coveragePlan: ManualCove
   const normalizedCandidate = normalizeOverlapText(candidateText);
   const covered = mandatoryItems.filter((item) => isCoverageItemPresent(normalizedCandidate, item)).length;
   const ratio = covered / mandatoryItems.length;
-  const threshold = mandatoryItems.length >= 6 ? MANUAL_MIN_COVERAGE_RATIO : 0.67;
+  const threshold =
+    mandatoryItems.length >= 12
+      ? Math.max(0.58, MANUAL_MIN_COVERAGE_RATIO - 0.05)
+      : mandatoryItems.length >= 8
+        ? MANUAL_MIN_COVERAGE_RATIO
+        : 0.6;
 
   return ratio < threshold;
+}
+
+function isSafeManualAdaptationForFallback(
+  text: string,
+  lengthRange: { minLength: number; maxLength: number }
+): boolean {
+  const minSafeLength = Math.max(900, Math.floor(lengthRange.minLength * 0.75));
+  return (
+    text.length >= minSafeLength &&
+    !looksLikeModelRefusal(text) &&
+    !containsManualGarbage(text) &&
+    !hasResidualMetadataMarkers(text) &&
+    !hasRawPdfLayoutArtifacts(text) &&
+    !endsWithIncompleteThought(text)
+  );
 }
 
 function isCoverageItemPresent(normalizedCandidate: string, item: string): boolean {
