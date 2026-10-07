@@ -2924,3 +2924,17 @@ GitHub authentication is required before the prepared project commits can be pus
 
 Impact:
 A verified temporary `gh` executable is ready to start GitHub's browser-based OAuth flow. No system directory, project runtime dependency, GitHub repository, or remote branch was modified.
+
+## Update 187 — 2026-10-07
+
+Files: progress.md, updates.md, Git repository history
+Lines: `progress.md` (200), `updates.md` (new section)
+
+Change:
+Completed GitHub OAuth device-flow authorization for account `George7455`, stored the credential in the macOS keyring through the official GitHub CLI, configured authenticated HTTPS Git operations, and pushed local `main` to `George7455/bot_hvostaty_gurman` (`c5c63cf` → `3542dea`).
+
+Reason:
+The current project files had to be available in the connected GitHub repository before Codex cloud could load the same version that existed locally.
+
+Impact:
+The hardened project state and its traceability records are now available from the GitHub `main` branch for Codex cloud sessions. Local `.env` secrets remain excluded from Git.
