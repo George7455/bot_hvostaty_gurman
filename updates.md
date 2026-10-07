@@ -2910,3 +2910,17 @@ Codex cloud cannot load uncommitted local-only changes; it needs the current pro
 
 Impact:
 The local `main` branch is prepared for cloud synchronization, but GitHub and `origin/main` remain unchanged until GitHub authentication is restored.
+
+## Update 186 — 2026-10-07
+
+Files: progress.md, updates.md
+Lines: `progress.md` (199), `updates.md` (new section)
+
+Change:
+Recorded the failed Homebrew installation caused by an unwritable legacy Homebrew directory and unsupported macOS 26.6 detection. Downloaded the official GitHub CLI 2.101.0 macOS arm64 release into a temporary directory and verified its archive against the release SHA-256 checksum `e4303e39d8f07141c4bad4b99b01079f05029c59b27076e8fbc825c985ecdd8b`.
+
+Reason:
+GitHub authentication is required before the prepared project commits can be pushed for Codex cloud access, while changing ownership or permissions of the system Homebrew installation is outside the requested scope.
+
+Impact:
+A verified temporary `gh` executable is ready to start GitHub's browser-based OAuth flow. No system directory, project runtime dependency, GitHub repository, or remote branch was modified.

@@ -196,3 +196,4 @@
 [✓] Step 196 — Final verification passed: clean diff check, TypeScript typecheck/build, 15/15 tests, Prisma schema validation/diff inspection, environment parsing, and installed dependency-tree validation.
 [✓] Step 197 — Verified the configured GitHub remote, confirmed local secrets remain ignored, and packaged the current 42-file project state into a local Git commit for Codex cloud access.
 [✗] Step 198 — The authorized GitHub push to `origin/main` failed because the stored HTTPS credential is invalid and no GitHub SSH key is configured on this Mac.
+[✓] Step 199 — Downloaded the official standalone GitHub CLI 2.101.0 arm64 release to a temporary directory and verified its SHA-256 checksum after the legacy Homebrew installation failed; no system directory was modified.
