@@ -2938,3 +2938,17 @@ The current project files had to be available in the connected GitHub repository
 
 Impact:
 The hardened project state and its traceability records are now available from the GitHub `main` branch for Codex cloud sessions. Local `.env` secrets remain excluded from Git.
+
+## Update 188 — 2026-10-07
+
+Files: progress.md, updates.md, user GitHub CLI installation/configuration
+Lines: `progress.md` (201), `updates.md` (new section)
+
+Change:
+Installed the checksum-verified GitHub CLI 2.101.0 binary at `/Users/georgijmac/.local/bin/gh` and reran `gh auth setup-git` from that stable path. Confirmed the authenticated account is `George7455`, the default branch is `main`, and local `main` matches `origin/main`.
+
+Reason:
+The initial OAuth setup referenced a temporary executable path that could disappear after temporary-file cleanup or a restart.
+
+Impact:
+GitHub authentication and future terminal pushes remain usable after the temporary download directory is removed. Homebrew ownership, system directories, and project runtime dependencies remain unchanged.

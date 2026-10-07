@@ -198,3 +198,4 @@
 [✗] Step 198 — The authorized GitHub push to `origin/main` failed because the stored HTTPS credential is invalid and no GitHub SSH key is configured on this Mac.
 [✓] Step 199 — Downloaded the official standalone GitHub CLI 2.101.0 arm64 release to a temporary directory and verified its SHA-256 checksum after the legacy Homebrew installation failed; no system directory was modified.
 [✓] Step 200 — Completed GitHub device-flow authorization for account `George7455` and pushed the prepared project history to `George7455/bot_hvostaty_gurman` branch `main` (`c5c63cf` → `3542dea`).
+[✓] Step 201 — Installed the verified GitHub CLI binary permanently at `~/.local/bin/gh`, rebound Git's credential helper to that path, and confirmed local `main` matched the GitHub `main` branch.
