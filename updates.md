@@ -2903,10 +2903,10 @@ Files: progress.md, updates.md, Git repository history
 Lines: `progress.md` (197–198), `updates.md` (new section)
 
 Change:
-Verified the existing `origin` remote (`https://github.com/George7455/bot_hvostaty_gurman.git`), confirmed `.env` and local secret variants remain excluded by `.gitignore`, and created a local commit containing the current 42-file project state. Recorded that the external push is pending explicit user authorization.
+Verified the existing `origin` remote (`https://github.com/George7455/bot_hvostaty_gurman.git`), confirmed `.env` and local secret variants remain excluded by `.gitignore`, and created a local commit containing the current 42-file project state. The authorized push was attempted and rejected because the stored HTTPS credential is invalid; an SSH authentication check also confirmed that no usable GitHub key is configured on this Mac.
 
 Reason:
 Codex cloud cannot load uncommitted local-only changes; it needs the current project state available through the connected GitHub repository.
 
 Impact:
-The local `main` branch is prepared for cloud synchronization. GitHub and `origin/main` remain unchanged until the user explicitly authorizes the upload.
+The local `main` branch is prepared for cloud synchronization, but GitHub and `origin/main` remain unchanged until GitHub authentication is restored.

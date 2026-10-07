@@ -195,4 +195,4 @@
 [✓] Step 195 — Parsed and normalized the real local 12-page, 7,035,116-byte PDF without AI/network calls; produced 11,804 cleaned characters within all configured limits.
 [✓] Step 196 — Final verification passed: clean diff check, TypeScript typecheck/build, 15/15 tests, Prisma schema validation/diff inspection, environment parsing, and installed dependency-tree validation.
 [✓] Step 197 — Verified the configured GitHub remote, confirmed local secrets remain ignored, and packaged the current 42-file project state into a local Git commit for Codex cloud access.
-[✗] Step 198 — GitHub push to `origin/main` was not executed because explicit authorization to upload the full source payload to that external repository is still required.
+[✗] Step 198 — The authorized GitHub push to `origin/main` failed because the stored HTTPS credential is invalid and no GitHub SSH key is configured on this Mac.
