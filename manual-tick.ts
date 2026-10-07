@@ -24,11 +24,23 @@ async function run(): Promise<void> {
     const sessions = new SessionsService(repos.userSession);
     const sheets = SheetsService.fromEnv(env, repos.contentPlan);
     const telegram = new TelegramService(env, sessions);
-    const publishing = new PublishingService(repos.draft, repos.publication, sheets, telegram);
-    const moderation = new ModerationService(repos.draft, repos.moderationAction, drafts, sessions, publishing, telegram);
+    const publishing = new PublishingService(
+      repos.publication,
+      repos.publicationIntent,
+      sheets,
+      telegram
+    );
+    const moderation = new ModerationService(
+      repos.draft,
+      repos.moderationDelivery,
+      drafts,
+      sessions,
+      publishing,
+      telegram
+    );
     telegram.bindModerationModule(moderation);
 
-    const planner = new PlannerService(sheets, drafts, moderation);
+    const planner = new PlannerService(sheets, drafts, moderation, publishing, repos.plannerRun);
     await planner.runScheduledPlanningTick();
 
     console.log('manual planner tick done');

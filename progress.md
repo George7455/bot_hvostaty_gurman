@@ -177,3 +177,22 @@
 [✓] Step 177 — Rebalanced long-PDF length targets in manual adaptation to reduce overlap pressure on large inputs while keeping detailed output range.
 [✓] Step 178 — Fixed aggressive date/number cleanup to preserve meaningful years and numeric constraints (removed broad standalone-year stripping in generation and Telegram normalization paths).
 [✓] Step 179 — Replaced PDF text flattening with paragraph reconstruction in Telegram preprocessing and re-validated compile integrity (`npm run typecheck`, `npm run build` passed).
+[✓] Step 180 — Re-read `CODEX.md`, `plan.md`, `progress.md`, `architecture.md`, and repository history to reconstruct the implemented scope and the April 2026 stopping point.
+[✓] Step 181 — Re-ran offline integrity checks (`npm run typecheck`, `npm run build`, `npx prisma validate`, `npm ls --depth=0`); all completed successfully.
+[✓] Step 182 — Completed static lifecycle audit across planner, Sheets, drafts, revisions, moderation, sessions, publishing, Telegram, Telegraph, AI, and PDF processing with file/line evidence.
+[✓] Step 183 — Reproduced the manual-adaptation outage fallback with a stub AI: a nutrition source produced an unrelated dog-training draft; no external API was called.
+[✓] Step 184 — Confirmed missing automated tests, Prisma migrations, architecture documentation, authorization gates, and live end-to-end verification; prepared prioritized remediation findings without modifying runtime code.
+[✓] Step 185 — Added a built-in Node test command, production Prisma migration command, and aligned the declared Node engine with the installed PDF parser runtime requirement.
+[✓] Step 186 — Removed the fabricated deterministic `/upload` fallback, added AI call/token/input/deadline limits, and changed upstream failure behavior to reject without inventing content.
+[✓] Step 187 — Reworked manual/PDF cleanup so standalone metadata is removed while meaningful phrases, short acronyms, dates in prose, and durations such as `10 минут` are preserved.
+[✓] Step 188 — Added Telegram moderator user/chat authorization, per-actor throttling, bounded PDF download/parsing, generic user-facing errors, and strict startup timeout behavior.
+[✓] Step 189 — Implemented revision-safe lifecycle transactions: initial revision creation, compare-and-set rewrites, exact revision approval, DB-backed session claims, and immutable publication snapshots.
+[✓] Step 190 — Added durable planner, moderation-delivery, and publication-intent records with DB leases and `NEEDS_RECONCILIATION` quarantine for ambiguous external operations.
+[✓] Step 191 — Corrected the required Moscow schedule to 09:00, 15:00, and 21:00 and tied each planner slot to its exact draft for crash-safe resume.
+[✓] Step 192 — Replaced mutable Google Sheets row identity with spreadsheet + worksheet + `content_id`, including row-reorder lookup and DB/Sheets status reconciliation.
+[✓] Step 193 — Added initial and hardening Prisma migrations, including legacy data backfill and quarantine of unverifiable legacy external deliveries.
+[✓] Step 194 — Added architecture/runbook documentation and 15 offline regression/integration tests covering authorization, limits, revisions, publication ambiguity, Sheets reordering, and the full fake workflow.
+[✓] Step 195 — Parsed and normalized the real local 12-page, 7,035,116-byte PDF without AI/network calls; produced 11,804 cleaned characters within all configured limits.
+[✓] Step 196 — Final verification passed: clean diff check, TypeScript typecheck/build, 15/15 tests, Prisma schema validation/diff inspection, environment parsing, and installed dependency-tree validation.
+[✓] Step 197 — Verified the configured GitHub remote, confirmed local secrets remain ignored, and packaged the current 42-file project state into a local Git commit for Codex cloud access.
+[✗] Step 198 — GitHub push to `origin/main` was not executed because explicit authorization to upload the full source payload to that external repository is still required.

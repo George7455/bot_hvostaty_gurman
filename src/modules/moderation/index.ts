@@ -1,112 +1,175 @@
-import type { ModerationActionType } from '@prisma/client';
-
 import type { DraftsModule } from '../drafts/index.js';
 import type { PublishingModule } from '../publishing/index.js';
 import type { SessionsModule } from '../sessions/index.js';
+import type {
+  ModerationDeliveryClaim,
+  ModerationDeliveryRepository,
+  ModerationMessageContext,
+  ModerationMessageReceipt
+} from '../../repositories/moderation-delivery.repository.js';
 import type { DraftRepository } from '../../repositories/draft.repository.js';
-import type { ModerationActionRepository } from '../../repositories/moderation-action.repository.js';
+
+const DELIVERY_LEASE_MS = 5 * 60_000;
 
 export interface ModerationDeliveryPort {
-  sendDraftToModerators(draftId: string, text: string): Promise<void>;
+  sendDraftToModerators(draftId: string, text: string): Promise<readonly ModerationMessageReceipt[]>;
+}
+
+export class ModerationTransportError extends Error {
+  public constructor(
+    message: string,
+    public readonly receipts: readonly ModerationMessageReceipt[],
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+  }
 }
 
 export interface ModerationModule {
-  enqueueDraftForModeration(draftId: string): Promise<void>;
-  approveDraft(actorId: string, draftId: string): Promise<void>;
-  rewriteDraft(actorId: string, draftId: string): Promise<void>;
-  requestRewriteNotes(actorId: string, draftId: string): Promise<void>;
+  enqueueDraftForModeration(draftId: string, expectedRevisionId?: string): Promise<void>;
+  approveDraft(actorId: string, draftId: string, context: ModerationMessageContext): Promise<void>;
+  rewriteDraft(actorId: string, draftId: string, context: ModerationMessageContext): Promise<void>;
+  requestRewriteNotes(actorId: string, draftId: string, context: ModerationMessageContext): Promise<void>;
   submitRewriteNotes(actorId: string, notes: string): Promise<void>;
   processManualUploadArticle(actorId: string, articleText: string): Promise<string>;
+  deliverNextPendingDraft(): Promise<boolean>;
 }
 
 export class ModerationService implements ModerationModule {
   public constructor(
     private readonly draftRepository: DraftRepository,
-    private readonly moderationActionRepository: ModerationActionRepository,
+    private readonly moderationDeliveryRepository: ModerationDeliveryRepository,
     private readonly draftsModule: DraftsModule,
     private readonly sessionsModule: SessionsModule,
     private readonly publishingModule: PublishingModule,
     private readonly moderationDelivery: ModerationDeliveryPort
   ) {}
 
-  public async enqueueDraftForModeration(draftId: string): Promise<void> {
-    const draft = await this.draftRepository.findById(draftId);
-    if (!draft) {
-      throw new Error(`Draft not found for moderation enqueue: ${draftId}`);
+  public async enqueueDraftForModeration(draftId: string, expectedRevisionId?: string): Promise<void> {
+    const draft = await this.draftRepository.prepareModerationDelivery(draftId, expectedRevisionId);
+    const claim = await this.moderationDeliveryRepository.claimForRevision(
+      draft.id,
+      draft.currentRevisionId,
+      DELIVERY_LEASE_MS
+    );
+    if (!claim) {
+      return;
     }
-
-    await this.draftRepository.updateStatus(draft.id, 'IN_REVIEW');
-    await this.moderationDelivery.sendDraftToModerators(draft.id, draft.currentText);
+    await this.deliverClaim(claim);
   }
 
-  public async approveDraft(actorId: string, draftId: string): Promise<void> {
-    const draft = await this.draftRepository.findById(draftId);
-    if (!draft) {
-      throw new Error(`Draft not found for approve: ${draftId}`);
-    }
-
-    if (draft.status === 'PUBLISHED') {
-      throw new Error(`Draft ${draftId} is already published.`);
-    }
-
-    if (draft.status === 'IN_REVIEW') {
-      await this.appendAction(draftId, actorId, 'APPROVE');
-      await this.draftRepository.updateStatus(draftId, 'APPROVED');
-    } else if (draft.status !== 'APPROVED') {
-      throw new Error(`Draft ${draftId} cannot be approved from status ${draft.status}.`);
-    }
-
-    await this.publishingModule.publishApprovedDraft(draftId);
+  public async approveDraft(
+    actorId: string,
+    draftId: string,
+    context: ModerationMessageContext
+  ): Promise<void> {
+    const revisionId = await this.requireDeliveredRevision(draftId, context);
+    await this.draftRepository.approveCurrentRevision({
+      draftId,
+      expectedRevisionId: revisionId,
+      actorId
+    });
+    await this.publishingModule.publishApprovedDraft(draftId, revisionId);
   }
 
-  public async rewriteDraft(actorId: string, draftId: string): Promise<void> {
-    await this.ensureDraftInReview(draftId, 'rewrite');
-    await this.appendAction(draftId, actorId, 'REWRITE');
-    await this.draftsModule.rewriteDraft(draftId);
-    await this.enqueueDraftForModeration(draftId);
+  public async rewriteDraft(
+    actorId: string,
+    draftId: string,
+    context: ModerationMessageContext
+  ): Promise<void> {
+    const revisionId = await this.requireDeliveredRevision(draftId, context);
+    const rewritten = await this.draftsModule.rewriteDraft({
+      draftId,
+      expectedRevisionId: revisionId,
+      actorId,
+      actionType: 'REWRITE'
+    });
+    await this.enqueueDraftForModeration(rewritten.draftId, rewritten.revisionId);
   }
 
-  public async requestRewriteNotes(actorId: string, draftId: string): Promise<void> {
-    await this.ensureDraftInReview(draftId, 'rewrite_notes');
-    await this.sessionsModule.setWaitingNotes(actorId, draftId);
+  public async requestRewriteNotes(
+    actorId: string,
+    draftId: string,
+    context: ModerationMessageContext
+  ): Promise<void> {
+    const revisionId = await this.requireDeliveredRevision(draftId, context);
+    await this.sessionsModule.setWaitingNotes(actorId, draftId, revisionId);
   }
 
   public async submitRewriteNotes(actorId: string, notes: string): Promise<void> {
-    const session = await this.sessionsModule.getSession(actorId);
-    if (session.mode !== 'WAITING_NOTES' || !session.pendingDraftId) {
-      throw new Error(`User ${actorId} is not in WAITING_NOTES mode.`);
+    const claim = await this.sessionsModule.claimSession(actorId, 'WAITING_NOTES');
+    try {
+      if (!claim.pendingDraftId || !claim.pendingRevisionId) {
+        throw new Error(`WAITING_NOTES session for user ${actorId} has no draft revision.`);
+      }
+      const rewritten = await this.draftsModule.rewriteDraft({
+        draftId: claim.pendingDraftId,
+        expectedRevisionId: claim.pendingRevisionId,
+        actorId,
+        notes,
+        actionType: 'REWRITE_NOTES'
+      });
+      await this.sessionsModule.completeClaim(actorId, claim.processingToken);
+      await this.enqueueDraftForModeration(rewritten.draftId, rewritten.revisionId);
+    } catch (error: unknown) {
+      await this.releaseClaimIfOwned(actorId, claim.processingToken);
+      throw error;
     }
-
-    await this.appendAction(session.pendingDraftId, actorId, 'REWRITE_NOTES', notes);
-    await this.draftsModule.rewriteDraft(session.pendingDraftId, notes);
-    await this.enqueueDraftForModeration(session.pendingDraftId);
-    await this.sessionsModule.clearSession(actorId);
   }
 
   public async processManualUploadArticle(actorId: string, articleText: string): Promise<string> {
-    const draftId = await this.draftsModule.createDraftFromManualArticle(articleText);
-    await this.enqueueDraftForModeration(draftId);
-    await this.sessionsModule.clearSession(actorId);
-    return draftId;
+    const claim = await this.sessionsModule.claimSession(actorId, 'WAITING_ARTICLE');
+    try {
+      const draft = await this.draftsModule.createDraftFromManualArticle(articleText);
+      await this.sessionsModule.completeClaim(actorId, claim.processingToken);
+      await this.enqueueDraftForModeration(draft.draftId, draft.revisionId);
+      return draft.draftId;
+    } catch (error: unknown) {
+      await this.releaseClaimIfOwned(actorId, claim.processingToken);
+      throw error;
+    }
   }
 
-  private async appendAction(
+  public async deliverNextPendingDraft(): Promise<boolean> {
+    const claim = await this.moderationDeliveryRepository.claimNext(DELIVERY_LEASE_MS);
+    if (!claim) {
+      return false;
+    }
+    await this.deliverClaim(claim);
+    return true;
+  }
+
+  private async requireDeliveredRevision(
     draftId: string,
-    actorId: string,
-    actionType: ModerationActionType,
-    notes?: string
-  ): Promise<void> {
-    await this.moderationActionRepository.appendAction(draftId, actorId, actionType, notes);
+    context: ModerationMessageContext
+  ): Promise<string> {
+    const revisionId = await this.moderationDeliveryRepository.resolveRevisionId(draftId, context);
+    if (!revisionId) {
+      throw new Error(`Moderation message is not registered for draft ${draftId}.`);
+    }
+    return revisionId;
   }
 
-  private async ensureDraftInReview(draftId: string, action: 'rewrite' | 'rewrite_notes'): Promise<void> {
-    const draft = await this.draftRepository.findById(draftId);
-    if (!draft) {
-      throw new Error(`Draft not found for ${action}: ${draftId}`);
-    }
-
-    if (draft.status !== 'IN_REVIEW') {
-      throw new Error(`Draft ${draftId} cannot be ${action} from status ${draft.status}.`);
+  private async deliverClaim(claim: ModerationDeliveryClaim): Promise<void> {
+    try {
+      const receipts = await this.moderationDelivery.sendDraftToModerators(claim.draftId, claim.text);
+      await this.moderationDeliveryRepository.markSent(claim, receipts);
+    } catch (error: unknown) {
+      const receipts = error instanceof ModerationTransportError ? error.receipts : [];
+      await this.moderationDeliveryRepository.markNeedsReconciliation(claim, toErrorMessage(error), receipts);
+      throw error;
     }
   }
+
+  private async releaseClaimIfOwned(actorId: string, processingToken: string): Promise<void> {
+    try {
+      await this.sessionsModule.releaseClaim(actorId, processingToken);
+    } catch {
+      // Successful work may have already completed the claim. Never overwrite a newer session.
+    }
+  }
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

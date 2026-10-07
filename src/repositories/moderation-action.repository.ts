@@ -1,7 +1,13 @@
 import type { ModerationAction, ModerationActionType, PrismaClient } from '@prisma/client';
 
 export interface ModerationActionRepository {
-  appendAction(draftId: string, actorId: string, actionType: ModerationActionType, notes?: string): Promise<ModerationAction>;
+  appendAction(
+    draftId: string,
+    revisionId: string,
+    actorId: string,
+    actionType: ModerationActionType,
+    notes?: string
+  ): Promise<ModerationAction>;
 }
 
 export class PrismaModerationActionRepository implements ModerationActionRepository {
@@ -9,6 +15,7 @@ export class PrismaModerationActionRepository implements ModerationActionReposit
 
   public async appendAction(
     draftId: string,
+    revisionId: string,
     actorId: string,
     actionType: ModerationActionType,
     notes?: string
@@ -16,6 +23,7 @@ export class PrismaModerationActionRepository implements ModerationActionReposit
     return this.prisma.moderationAction.create({
       data: {
         draftId,
+        revisionId,
         actorId,
         actionType,
         ...(notes ? { notes } : {})

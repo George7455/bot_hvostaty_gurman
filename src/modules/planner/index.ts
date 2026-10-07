@@ -1,14 +1,13 @@
-import { readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
-
 import type { DraftsModule } from '../drafts/index.js';
 import type { ModerationModule } from '../moderation/index.js';
+import type { PublishingModule } from '../publishing/index.js';
 import type { SheetsModule } from '../sheets/index.js';
+import type { PlannerRunRepository } from '../../repositories/planner-run.repository.js';
 
 const MOSCOW_TIMEZONE = 'Europe/Moscow';
-const PLANNED_HOURS = new Set([9, 17]);
+export const PLANNED_HOURS = new Set([9, 15, 21]);
 const SCHEDULE_MINUTE_WINDOW = 5;
-const PLANNER_STATE_PATH = resolve(process.cwd(), '.planner-state.json');
+const PLANNER_LEASE_MS = 10 * 60_000;
 
 export interface PlannerModule {
   runScheduledPlanningTick(): Promise<void>;
@@ -18,107 +17,114 @@ export interface PlannerModule {
 
 export class PlannerService implements PlannerModule {
   private schedulerInterval: NodeJS.Timeout | null = null;
-  private lastRunKey: string | null = null;
-  private stateLoaded = false;
-  private readonly statePath: string;
 
   public constructor(
     private readonly sheetsModule: SheetsModule,
     private readonly draftsModule: DraftsModule,
     private readonly moderationModule: ModerationModule,
-    statePath: string = PLANNER_STATE_PATH
-  ) {
-    this.statePath = statePath;
-  }
+    private readonly publishingModule: PublishingModule,
+    private readonly plannerRunRepository: PlannerRunRepository
+  ) {}
 
   public start(): void {
     if (this.schedulerInterval) {
       return;
     }
-
     this.schedulerInterval = setInterval(() => {
-      void this.handleScheduleTick().catch((error: unknown) => {
-        console.error('Planner schedule tick failed', error);
+      void this.handleTimerTick().catch((error: unknown) => {
+        console.error('Planner timer tick failed', error);
       });
     }, 30_000);
-
-    void this.handleScheduleTick().catch((error: unknown) => {
+    void this.handleTimerTick().catch((error: unknown) => {
       console.error('Planner startup tick failed', error);
     });
   }
 
   public stop(): void {
-    if (!this.schedulerInterval) {
-      return;
+    if (this.schedulerInterval) {
+      clearInterval(this.schedulerInterval);
+      this.schedulerInterval = null;
     }
-
-    clearInterval(this.schedulerInterval);
-    this.schedulerInterval = null;
   }
 
   public async runScheduledPlanningTick(): Promise<void> {
-    const pickedItem = await this.sheetsModule.pickAndPersistNextPendingItem();
-    if (!pickedItem) {
+    await this.executePlanningTick();
+  }
+
+  private async executePlanningTick(plannerRunKey?: string, existingDraftId?: string | null): Promise<void> {
+    if (existingDraftId) {
+      await this.moderationModule.enqueueDraftForModeration(existingDraftId);
       return;
     }
 
-    const draftCreation = await this.draftsModule.createInitialDraftFromContentPlanItem(pickedItem.contentPlanItemId);
+    let draftCreation = await this.draftsModule.createInitialDraftFromNextInReview(plannerRunKey);
     if (!draftCreation) {
-      throw new Error(
-        `Picked ContentPlanItem ${pickedItem.contentPlanItemId} but failed to create draft. ` +
-          'Likely stale draft linkage in DB or concurrent processing conflict.'
+      const pickedItem = await this.sheetsModule.pickAndPersistNextPendingItem();
+      if (!pickedItem) {
+        return;
+      }
+      draftCreation = await this.draftsModule.createInitialDraftFromContentPlanItem(
+        pickedItem.contentPlanItemId,
+        plannerRunKey
       );
+      if (!draftCreation) {
+        throw new Error(`Picked ContentPlanItem ${pickedItem.contentPlanItemId} but could not create its draft.`);
+      }
     }
 
-    await this.moderationModule.enqueueDraftForModeration(draftCreation.draftId);
+    try {
+      await this.moderationModule.enqueueDraftForModeration(
+        draftCreation.draftId,
+        draftCreation.revisionId
+      );
+    } catch (error: unknown) {
+      // The durable delivery is already recorded. A transport ambiguity must not consume
+      // another content-plan row during this schedule slot.
+      console.error('Draft persisted but moderation delivery requires reconciliation', {
+        draftId: draftCreation.draftId,
+        error
+      });
+    }
   }
 
-  private async handleScheduleTick(): Promise<void> {
-    const currentTime = getMoscowTimeParts();
-    console.log(
-      `Planner tick ${currentTime.date} ${String(currentTime.hour).padStart(2, '0')}:${String(
-        currentTime.minute
-      ).padStart(2, '0')} MSK`
-    );
+  private async handleTimerTick(): Promise<void> {
+    await this.recoverDurableWork();
 
-    await this.ensureStateLoaded();
+    const currentTime = getMoscowTimeParts();
     if (currentTime.minute >= SCHEDULE_MINUTE_WINDOW || !PLANNED_HOURS.has(currentTime.hour)) {
       return;
     }
 
-    const runKey = `${currentTime.date}-${currentTime.hour}`;
-    if (this.lastRunKey === runKey) {
-      return;
-    }
-
-    this.lastRunKey = runKey;
-    await this.persistLastRunKey();
-    await this.runScheduledPlanningTick();
-  }
-
-  private async ensureStateLoaded(): Promise<void> {
-    if (this.stateLoaded) {
+    const runKey = `${currentTime.date}-${String(currentTime.hour).padStart(2, '0')}`;
+    const claim = await this.plannerRunRepository.claimRun(runKey, PLANNER_LEASE_MS);
+    if (!claim) {
       return;
     }
 
     try {
-      const rawState = await readFile(this.statePath, 'utf8');
-      const parsedState = JSON.parse(rawState) as { lastRunKey?: unknown };
-      this.lastRunKey = typeof parsedState.lastRunKey === 'string' ? parsedState.lastRunKey : null;
-    } catch {
-      this.lastRunKey = null;
+      await this.executePlanningTick(claim.runKey, claim.draftId);
+      await this.plannerRunRepository.markSucceeded(claim.runKey, claim.leaseToken);
+    } catch (error: unknown) {
+      await this.plannerRunRepository.markFailed(claim.runKey, claim.leaseToken, toErrorMessage(error));
+      throw error;
     }
-
-    this.stateLoaded = true;
   }
 
-  private async persistLastRunKey(): Promise<void> {
-    const state = JSON.stringify({ lastRunKey: this.lastRunKey });
-    await writeFile(this.statePath, `${state}\n`, 'utf8');
+  private async recoverDurableWork(): Promise<void> {
+    try {
+      await this.moderationModule.deliverNextPendingDraft();
+    } catch (error: unknown) {
+      console.error('Pending moderation delivery recovery failed', error);
+    }
+    try {
+      await this.publishingModule.publishNextPendingDraft();
+    } catch (error: unknown) {
+      console.error('Pending publication recovery failed', error);
+    }
   }
 }
 
-function getMoscowTimeParts(): { date: string; hour: number; minute: number } {
+export function getMoscowTimeParts(now: Date = new Date()): { date: string; hour: number; minute: number } {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: MOSCOW_TIMEZONE,
     year: 'numeric',
@@ -128,13 +134,12 @@ function getMoscowTimeParts(): { date: string; hour: number; minute: number } {
     minute: '2-digit',
     hour12: false
   });
-
-  const parts = formatter.formatToParts(new Date());
-  const date = `${readDatePart(parts, 'year')}-${readDatePart(parts, 'month')}-${readDatePart(parts, 'day')}`;
-  const hour = Number(readDatePart(parts, 'hour'));
-  const minute = Number(readDatePart(parts, 'minute'));
-
-  return { date, hour, minute };
+  const parts = formatter.formatToParts(now);
+  return {
+    date: `${readDatePart(parts, 'year')}-${readDatePart(parts, 'month')}-${readDatePart(parts, 'day')}`,
+    hour: Number(readDatePart(parts, 'hour')),
+    minute: Number(readDatePart(parts, 'minute'))
+  };
 }
 
 function readDatePart(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPartTypes): string {
@@ -142,6 +147,9 @@ function readDatePart(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeForma
   if (!part) {
     throw new Error(`Failed to read date part: ${type}`);
   }
-
   return part;
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

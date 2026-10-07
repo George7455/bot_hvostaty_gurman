@@ -29,21 +29,27 @@ async function bootstrap(): Promise<void> {
   const sheetsModule = SheetsService.fromEnv(env, repositories.contentPlan);
   const telegramModule = new TelegramService(env, sessionsModule);
   const publishingModule = new PublishingService(
-    repositories.draft,
     repositories.publication,
+    repositories.publicationIntent,
     sheetsModule,
     telegramModule
   );
   const moderationModule = new ModerationService(
     repositories.draft,
-    repositories.moderationAction,
+    repositories.moderationDelivery,
     draftsModule,
     sessionsModule,
     publishingModule,
     telegramModule
   );
   telegramModule.bindModerationModule(moderationModule);
-  const plannerModule = new PlannerService(sheetsModule, draftsModule, moderationModule);
+  const plannerModule = new PlannerService(
+    sheetsModule,
+    draftsModule,
+    moderationModule,
+    publishingModule,
+    repositories.plannerRun
+  );
   telegramModule.bindPlannerModule(plannerModule);
 
   const app = buildApp();
@@ -54,12 +60,8 @@ async function bootstrap(): Promise<void> {
   });
 
   console.log('Starting Telegram bot');
-  const telegramStarted = await withTimeout(telegramModule.start(), 15_000);
-  if (telegramStarted) {
-    console.log('Telegram bot started');
-  } else {
-    console.warn('Telegram bot start timed out; continuing without confirmed startup.');
-  }
+  await withTimeout(telegramModule.start(), env.TELEGRAM_STARTUP_TIMEOUT_MS);
+  console.log('Telegram bot started');
   plannerModule.start();
   console.log('Planner started');
 
@@ -68,6 +70,18 @@ async function bootstrap(): Promise<void> {
     port: env.PORT
   });
   console.log(`HTTP server listening on port ${env.PORT}`);
+
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    console.log(`Received ${signal}; shutting down.`);
+    await app.close();
+  };
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
 }
 
 bootstrap().catch((error: unknown) => {
@@ -75,23 +89,15 @@ bootstrap().catch((error: unknown) => {
   process.exit(1);
 });
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<boolean> {
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeoutHandle: NodeJS.Timeout | null = null;
   try {
-    const guardedPromise = promise
-      .then(() => true)
-      .catch((error: unknown) => {
-        console.warn('Telegram bot start failed; continuing without confirmed startup.', error);
-        return false;
-      });
-
-    const result = await Promise.race([
-      guardedPromise,
-      new Promise<boolean>((resolve) => {
-        timeoutHandle = setTimeout(() => resolve(false), timeoutMs);
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error(`Operation timed out after ${timeoutMs} ms.`)), timeoutMs);
       })
     ]);
-    return result === true;
   } finally {
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);

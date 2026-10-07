@@ -8,12 +8,14 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
+    "test": "npm run build && node --test dist/app.test.js dist/modules/*/*.test.js",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.16.0 <21 || >=22.3.0"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",

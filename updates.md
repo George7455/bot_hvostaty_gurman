@@ -2703,7 +2703,7 @@ Impact:
 
 ## Update 173 — 2026-04-16
 
-File: progress.md, updates.md  
+File: progress.md, updates.md
 Lines: `progress.md` (172-174), `updates.md` (new section)
 
 Change:
@@ -2751,3 +2751,162 @@ User-reported quality issue persisted after multiple iterations: output still lo
 
 Impact:
 `/upload` manual adaptation is now stricter on editorial format and rewrite quality while safer for long PDFs: outputs are gated for first-person + subheading structure, fallback no longer returns near-raw source style, year/number semantics are preserved better, and PDF text enters generation with paragraph boundaries instead of a single flattened stream. Compile checks passed (`npm run typecheck`, `npm run build`).
+
+## Update 175 — 2026-10-07
+
+Files: progress.md and updates.md
+Lines: `progress.md` (180-184), `updates.md` (new section)
+
+Change:
+Recorded a read-only project audit and verification pass:
+- reconstructed the implemented system and April 2026 stopping point from requirements, history, and execution logs;
+- re-ran TypeScript build/type checks, Prisma schema validation, and installed dependency-tree validation;
+- audited lifecycle, concurrency, recovery, authorization, Sheets identity, Telegram/Telegraph delivery, AI generation, and PDF ingestion paths with exact source references;
+- reproduced the deterministic `/upload` fallback defect using a local stub AI without external API calls;
+- confirmed that automated tests, Prisma migrations, architecture documentation, and a successful live end-to-end verification are absent.
+
+Reason:
+The user requested an evidence-based explanation of the current project, correctness assessment, stopping point, and required follow-up work after a long pause.
+
+Impact:
+No runtime source, schema, configuration, or business behavior was changed. The repository now records the audit scope and validation results; confirmed defects and remediation priorities are reported to the user separately.
+
+## Update 176 — 2026-10-07
+
+Files: package.json, package-lock.json, progress.md
+Lines: `package.json` (scripts and engines), `package-lock.json` (root engine contract), `progress.md` (185)
+
+Change:
+Added `npm test` using the built-in Node test runner after a fresh TypeScript build, added `prisma:migrate:deploy` for production migration application, and narrowed the Node.js engine declaration to `>=20.16.0 <21 || >=22.3.0`.
+
+Reason:
+The project had no test command or production migration command, and its former `>=20.0.0` engine declaration admitted Node versions rejected by the installed `pdf-parse@2.4.5` package.
+
+Impact:
+The repository now has a dependency-free automated test entrypoint, a production-safe migration script, and an accurate runtime-version contract. No dependency was installed or upgraded.
+
+## Update 177 — 2026-10-07
+
+Files: src/modules/ai/index.ts, src/modules/generation/index.ts, src/modules/telegram/index.ts
+Lines: `src/modules/ai/index.ts` (1–158), `src/modules/generation/index.ts` (1–2197), `src/modules/telegram/index.ts` (520–1010)
+
+Change:
+Added bounded AI requests (`instructions`, `store: false`, prompt/output/deadline limits), removed the deterministic fabricated manual-article fallback, and changed `/upload` to fail when no verified AI candidate exists. Replaced broad PDF/manual cleanup rules with structural metadata checks that preserve meaningful inline durations, dates, acronyms, and phrases such as “введение нового корма”. Added byte-stream, page-count, and extracted-text limits for PDF input.
+
+Reason:
+The audit reproduced unrelated dog-training output during an AI outage and found cleanup patterns capable of deleting legitimate source facts.
+
+Impact:
+AI outages no longer produce invented publishable text, resource use is bounded, and PDF cleanup is less destructive.
+
+## Update 178 — 2026-10-07
+
+Files: prisma/schema.prisma, src/repositories/draft.repository.ts, src/repositories/user-session.repository.ts, src/modules/drafts/index.ts, src/modules/sessions/index.ts, src/modules/moderation/index.ts
+Lines: `prisma/schema.prisma` (48–240), `src/repositories/draft.repository.ts` (1–334), `src/modules/moderation/index.ts` (1–175)
+
+Change:
+Added current/approved revision pointers and approval audit fields to Draft; tied ModerationAction, UserSession, Publication, delivery, and publication intent records to exact revision IDs. Draft/revision/delivery creation, rewrite compare-and-set, approval, action logging, and publication-intent creation now run in Prisma transactions. Session messages use unique processing tokens and stale-claim recovery instead of read-then-clear logic.
+
+Reason:
+Concurrent callbacks and old Telegram buttons could previously rewrite or publish a newer text than the editor had reviewed.
+
+Impact:
+Lifecycle transitions are atomic and stale/repeated moderation actions are rejected against the reviewed revision.
+
+## Update 179 — 2026-10-07
+
+Files: src/repositories/moderation-delivery.repository.ts, src/repositories/publication-intent.repository.ts, src/repositories/publication.repository.ts, src/modules/publishing/index.ts, src/modules/telegram/index.ts
+Lines: `src/repositories/moderation-delivery.repository.ts` (1–215), `src/repositories/publication-intent.repository.ts` (1–198), `src/modules/publishing/index.ts` (1–163), `src/modules/telegram/index.ts` (1–520)
+
+Change:
+Implemented durable moderation deliveries and publication intents with leases. Stored Telegram moderator message receipts to resolve revision IDs without changing required callback formats. Added `NEEDS_RECONCILIATION` quarantine for partial, ambiguous, or expired external requests. Telegraph pages are created only after approval; their path, URL, and ready payload are persisted before channel send and reused. Publication stores approved text/payload/actor/source snapshots and resumes a proven DB publication at the Sheets step without sending another channel message.
+
+Reason:
+External send operations cannot be made transactional with PostgreSQL; blind retries after network interruption can create duplicate moderator or channel messages.
+
+Impact:
+Confirmed-safe work is retryable, uncertain external effects stop for verification, and approved content remains auditable and immutable.
+
+## Update 180 — 2026-10-07
+
+Files: src/config/env.ts, src/modules/telegram/index.ts, src/main.ts, .env.example
+Lines: `src/config/env.ts` (1–87), `src/modules/telegram/index.ts` (40–520), `src/main.ts` (1–104), `.env.example` (1–24)
+
+Change:
+Added numeric moderator user/chat allowlists, blank-safe optional configuration parsing, handler/startup/Telegraph timeouts, per-actor operation guards, generic Telegram errors, strict bot startup, and SIGTERM/SIGINT shutdown. Removed automatic Telegraph account creation; long posts require a pre-provisioned token.
+
+Reason:
+The original bot accepted state-changing commands from any Telegram user and could report healthy while polling had not started.
+
+Impact:
+Only configured editors can mutate workflow state, secrets/internal errors are not returned to chat, and an unusable bot no longer starts the scheduler silently.
+
+## Update 181 — 2026-10-07
+
+Files: src/modules/planner/index.ts, src/repositories/planner-run.repository.ts, src/modules/sheets/index.ts, src/repositories/content-plan.repository.ts
+Lines: `src/modules/planner/index.ts` (1–155), `src/repositories/planner-run.repository.ts` (1–97), `src/modules/sheets/index.ts` (1–330), `src/repositories/content-plan.repository.ts` (1–119)
+
+Change:
+Corrected planner hours to 09:00/15:00/21:00 Europe/Moscow, replaced local-file last-run state with leased PlannerRun rows, and transactionally attached each run to its exact draft. Replaced unique row-number identity with spreadsheet/worksheet/`content_id`; every status write re-locates the key and detects duplicates/moves. Added recovery for DB/Sheets status drift.
+
+Reason:
+The previous scheduler used 09:00/17:00, committed its run marker before successful work, and could target the wrong content after row sorting.
+
+Impact:
+Schedule slots are correct and crash-resumable, while Sheets updates remain attached to the intended content item.
+
+## Update 182 — 2026-10-07
+
+Files: prisma/migrations/20260317000000_initial/migration.sql, prisma/migrations/20261007143000_harden_editorial_workflow/migration.sql, prisma/migrations/migration_lock.toml
+Lines: migration files (complete files)
+
+Change:
+Added a fresh-install baseline migration and a forward hardening migration. The latter backfills legacy revision pointers/publication snapshots, adds durable workflow tables/indexes/foreign keys, removes row-number uniqueness, and quarantines unverifiable legacy IN_REVIEW/APPROVED external work instead of replaying it.
+
+Reason:
+The repository had no reproducible database migration history and could not safely deploy schema changes.
+
+Impact:
+New databases can be created with `migrate deploy`; existing `db push` databases have a documented baseline-and-deploy path.
+
+## Update 183 — 2026-10-07
+
+Files: src/**/*.test.ts, package.json, README.md, architecture.md, manual-tick.ts, progress.md
+Lines: test files (complete files), `README.md` (1–79), `architecture.md` (1–85), `manual-tick.ts` (1–65), `progress.md` (186–195)
+
+Change:
+Added 15 built-in Node tests, including an offline full workflow from Sheets topic through AI stub, revision-bound moderation, publication, and PUBLISHED status. Added focused regression tests for AI outage/no-fabrication, limits, auth, PDF preservation, Moscow schedule, stale buttons, durable payload ordering, publication ambiguity, and Sheets row reordering. Documented architecture, setup, migrations, recovery semantics, and updated the manual tick wiring.
+
+Reason:
+The project previously had no automated tests, empty architecture documentation, and stale manual runner wiring.
+
+Impact:
+Core behavior is reproducibly verifiable without external writes. A real 12-page local PDF also passed extraction/normalization limits without AI or network access.
+
+## Update 184 — 2026-10-07
+
+Files: progress.md, updates.md
+Lines: `progress.md` (196), `updates.md` (new section)
+
+Change:
+Recorded the final validation sweep: `git diff --check`, `npm run typecheck`, `npm test`, `npx prisma validate`, Prisma empty-to-schema diff inspection, `npm ls --depth=0`, safe `.env` parsing, and real local PDF extraction/normalization.
+
+Reason:
+The user requested a complete local run after applying mandatory corrections.
+
+Impact:
+All offline/static checks pass, all 15 automated tests pass, the dependency tree is valid, and the real PDF stays within configured byte/page/text limits. No Telegram message, Google Sheets write, database migration, Telegraph page, or paid AI request was executed during verification.
+
+## Update 185 — 2026-10-07
+
+Files: progress.md, updates.md, Git repository history
+Lines: `progress.md` (197–198), `updates.md` (new section)
+
+Change:
+Verified the existing `origin` remote (`https://github.com/George7455/bot_hvostaty_gurman.git`), confirmed `.env` and local secret variants remain excluded by `.gitignore`, and created a local commit containing the current 42-file project state. Recorded that the external push is pending explicit user authorization.
+
+Reason:
+Codex cloud cannot load uncommitted local-only changes; it needs the current project state available through the connected GitHub repository.
+
+Impact:
+The local `main` branch is prepared for cloud synchronization. GitHub and `origin/main` remain unchanged until the user explicitly authorizes the upload.

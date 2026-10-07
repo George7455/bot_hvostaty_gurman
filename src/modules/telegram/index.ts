@@ -2,7 +2,7 @@ import { Context, Telegraf } from 'telegraf';
 
 import type { AppEnv } from '../../config/index.js';
 import type { ModerationModule } from '../moderation/index.js';
-import type { ModerationDeliveryPort } from '../moderation/index.js';
+import { ModerationTransportError, type ModerationDeliveryPort } from '../moderation/index.js';
 import type { PlannerModule } from '../planner/index.js';
 import type { PublishingTransport } from '../publishing/index.js';
 import type { SessionsModule } from '../sessions/index.js';
@@ -14,7 +14,23 @@ const TELEGRAM_MAX_MESSAGE_CHARS = 4096;
 const TELEGRAM_DIRECT_PUBLISH_LIMIT = 2200;
 const TELEGRAM_FILE_FETCH_TIMEOUT_MS = 20_000;
 const TELEGRAM_FILE_FETCH_RETRIES = 3;
-const PDF_PROGRESS_UPDATE_INTERVAL_MS = 90_000;
+const PDF_PROGRESS_UPDATE_INTERVAL_MS = 60_000;
+const ACTOR_RATE_LIMIT_MS = 1_500;
+const MAX_PDF_TEXT_CHARS = 60_000;
+const MAX_PDF_PAGES = 100;
+
+export interface TelegramModeratorAllowlist {
+  readonly chatIds: ReadonlySet<string>;
+  readonly userIds: ReadonlySet<string>;
+}
+
+interface ActorOperationLease {
+  release(): void;
+}
+
+type ActorOperationAcquireResult =
+  | { ok: true; lease: ActorOperationLease }
+  | { ok: false; reason: 'busy' | 'rate_limited' };
 
 export interface TelegramModule extends ModerationDeliveryPort, PublishingTransport {
   start(): Promise<void>;
@@ -25,9 +41,13 @@ export class TelegramService implements TelegramModule {
   private readonly bot: Telegraf;
   private readonly botToken: string;
   private readonly moderatorChatIds: string[];
+  private readonly moderatorAllowlist: TelegramModeratorAllowlist;
   private readonly channelId: string;
   private readonly telegraphAccessToken: string | null;
-  private readonly telegraphShortName: string;
+  private readonly telegraphRequestTimeoutMs: number;
+  private readonly activeActorOperations = new Set<string>();
+  private readonly lastActorOperationAt = new Map<string, number>();
+  private botRunning = false;
   private moderationModule: ModerationModule | null = null;
   private plannerModule: PlannerModule | null = null;
   private pdfParseClassPromise: Promise<PdfParseConstructor> | null = null;
@@ -36,12 +56,21 @@ export class TelegramService implements TelegramModule {
     env: AppEnv,
     private readonly sessionsModule: SessionsModule
   ) {
-    this.bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
+    this.bot = new Telegraf(env.TELEGRAM_BOT_TOKEN, {
+      handlerTimeout: env.TELEGRAM_HANDLER_TIMEOUT_MS
+    });
     this.botToken = env.TELEGRAM_BOT_TOKEN;
-    this.moderatorChatIds = parseModeratorChats(env.TELEGRAM_MODERATOR_CHAT_IDS);
+    this.moderatorChatIds = parseTelegramIdList(env.TELEGRAM_MODERATOR_CHAT_IDS);
+    const configuredModeratorUserIds = env.TELEGRAM_MODERATOR_USER_IDS
+      ? parseTelegramIdList(env.TELEGRAM_MODERATOR_USER_IDS)
+      : this.moderatorChatIds.filter((chatId) => !chatId.startsWith('-'));
+    this.moderatorAllowlist = {
+      chatIds: new Set(this.moderatorChatIds),
+      userIds: new Set(configuredModeratorUserIds)
+    };
     this.channelId = env.TELEGRAM_CHANNEL_ID;
     this.telegraphAccessToken = env.TELEGRAPH_ACCESS_TOKEN ?? null;
-    this.telegraphShortName = env.TELEGRAPH_SHORT_NAME ?? 'hvostaty_gurman';
+    this.telegraphRequestTimeoutMs = env.TELEGRAPH_REQUEST_TIMEOUT_MS;
 
     this.registerHandlers();
   }
@@ -56,13 +85,22 @@ export class TelegramService implements TelegramModule {
 
   public async start(): Promise<void> {
     await this.bot.launch();
+    this.botRunning = true;
   }
 
   public async stop(): Promise<void> {
-    await this.bot.stop();
+    if (!this.botRunning) {
+      return;
+    }
+
+    this.bot.stop('application shutdown');
+    this.botRunning = false;
   }
 
-  public async sendDraftToModerators(draftId: string, text: string): Promise<void> {
+  public async sendDraftToModerators(
+    draftId: string,
+    text: string
+  ): Promise<readonly { telegramChatId: string; telegramMessageId: string }[]> {
     const inlineKeyboard = {
       inline_keyboard: [
         [{ text: 'Approve', callback_data: `approve:${draftId}` }],
@@ -71,17 +109,52 @@ export class TelegramService implements TelegramModule {
       ]
     };
 
-    const readyPost = await this.buildReadyChannelPost(text);
-    const message = `Draft ID: ${draftId}\n\n${readyPost}`.slice(0, TELEGRAM_MAX_MESSAGE_CHARS);
-    for (const chatId of this.moderatorChatIds) {
-      await this.bot.telegram.sendMessage(chatId, message, { reply_markup: inlineKeyboard });
+    const chunks = splitTelegramText(`Draft ID: ${draftId}\n\n${text.trim()}`, TELEGRAM_MAX_MESSAGE_CHARS);
+    const receipts: Array<{ telegramChatId: string; telegramMessageId: string }> = [];
+    try {
+      for (const chatId of this.moderatorChatIds) {
+        for (let index = 0; index < chunks.length; index += 1) {
+          const chunk = chunks[index];
+          if (!chunk) {
+            continue;
+          }
+          const isLastChunk = index === chunks.length - 1;
+          const sent = await this.bot.telegram.sendMessage(
+            chatId,
+            chunk,
+            isLastChunk ? { reply_markup: inlineKeyboard } : undefined
+          );
+          if (isLastChunk) {
+            receipts.push({
+              telegramChatId: String(sent.chat.id),
+              telegramMessageId: String(sent.message_id)
+            });
+          }
+        }
+      }
+    } catch (error: unknown) {
+      throw new ModerationTransportError(
+        `Telegram moderation delivery failed after ${receipts.length} completed chat deliveries.`,
+        receipts,
+        { cause: error }
+      );
     }
+    return receipts;
   }
 
-  public async publishToChannel(text: string): Promise<{ telegramChatId: string; telegramMessageId: string }> {
-    const payload = await this.buildReadyChannelPost(text);
+  public async prepareChannelPost(text: string): Promise<{
+    payload: string;
+    telegraphPath?: string;
+    telegraphUrl?: string;
+  }> {
+    return this.buildReadyChannelPost(text);
+  }
 
-    const result = await this.bot.telegram.sendMessage(this.channelId, payload);
+  public async sendPreparedChannelPost(post: { payload: string }): Promise<{
+    telegramChatId: string;
+    telegramMessageId: string;
+  }> {
+    const result = await this.bot.telegram.sendMessage(this.channelId, post.payload);
     return {
       telegramChatId: String(result.chat.id),
       telegramMessageId: String(result.message_id)
@@ -94,21 +167,42 @@ export class TelegramService implements TelegramModule {
 
   private registerHandlers(): void {
     this.bot.command(UPLOAD_COMMAND, async (ctx) => {
-      try {
-        const userId = String(ctx.from?.id ?? '');
-        if (!userId) {
-          await ctx.reply('Failed to identify user.');
-          return;
-        }
+      const actor = this.readAuthorizedActor(ctx);
+      if (!actor) {
+        await safeReply(ctx, 'Недостаточно прав для использования этой команды.');
+        return;
+      }
 
-        await this.sessionsModule.setWaitingArticle(userId);
+      const acquired = this.acquireActorOperation(actor.userId);
+      if (!acquired.ok) {
+        await safeReply(ctx, actorGuardMessage(acquired.reason));
+        return;
+      }
+
+      try {
+        await this.sessionsModule.setWaitingArticle(actor.userId);
         await ctx.reply('Send the article text in one message or upload a PDF file. Send "cancel" to abort.');
       } catch (error: unknown) {
-        await safeReply(ctx, `Failed to handle /upload: ${toErrorMessage(error)}`);
+        console.error('Failed to handle authorized /upload command', error);
+        await safeReply(ctx, 'Не удалось начать загрузку. Подробности записаны в лог.');
+      } finally {
+        acquired.lease.release();
       }
     });
 
     this.bot.command('tick', async (ctx) => {
+      const actor = this.readAuthorizedActor(ctx);
+      if (!actor) {
+        await safeReply(ctx, 'Недостаточно прав для запуска планировщика.');
+        return;
+      }
+
+      const acquired = this.acquireActorOperation(actor.userId);
+      if (!acquired.ok) {
+        await safeReply(ctx, actorGuardMessage(acquired.reason));
+        return;
+      }
+
       try {
         if (!this.plannerModule) {
           await ctx.reply('Планировщик не инициализирован.');
@@ -119,7 +213,10 @@ export class TelegramService implements TelegramModule {
         await this.plannerModule.runScheduledPlanningTick();
         await ctx.reply('Ручной тик выполнен.');
       } catch (error: unknown) {
-        await safeReply(ctx, `Ручной тик завершился с ошибкой: ${toErrorMessage(error)}`);
+        console.error('Authorized manual planner tick failed', error);
+        await safeReply(ctx, 'Ручной тик завершился с ошибкой. Подробности записаны в лог.');
+      } finally {
+        acquired.lease.release();
       }
     });
 
@@ -146,9 +243,9 @@ export class TelegramService implements TelegramModule {
   private async handleCallbackQuery(ctx: Context): Promise<void> {
     const callbackQuery = (ctx.callbackQuery ?? {}) as { data?: unknown };
     const callbackData = typeof callbackQuery.data === 'string' ? callbackQuery.data : '';
-    const actorId = String(ctx.from?.id ?? '');
-    if (!actorId) {
-      await ctx.answerCbQuery('Failed to identify user.');
+    const actor = this.readAuthorizedActor(ctx);
+    if (!actor) {
+      await safeAnswerCbQuery(ctx, 'Недостаточно прав.');
       return;
     }
     if (typeof callbackData !== 'string' || callbackData.length === 0) {
@@ -156,9 +253,16 @@ export class TelegramService implements TelegramModule {
       return;
     }
 
-    const [action, draftId] = callbackData.split(':');
-    if (!action || !draftId) {
+    const callbackParts = callbackData.split(':');
+    const [action, draftId] = callbackParts;
+    if (callbackParts.length !== 2 || !action || !draftId) {
       await ctx.answerCbQuery('Invalid callback format.');
+      return;
+    }
+
+    const messageContext = readCallbackMessageContext(ctx);
+    if (!messageContext) {
+      await safeAnswerCbQuery(ctx, 'Moderation message context is unavailable.');
       return;
     }
 
@@ -172,35 +276,50 @@ export class TelegramService implements TelegramModule {
       return;
     }
 
+    const acquired = this.acquireActorOperation(actor.userId);
+    if (!acquired.ok) {
+      await safeAnswerCbQuery(ctx, actorGuardMessage(acquired.reason));
+      return;
+    }
+
     await safeAnswerCbQuery(ctx, 'Processing...');
 
     try {
       if (action === 'approve') {
-        await this.moderationModule.approveDraft(actorId, draftId);
+        await this.moderationModule.approveDraft(actor.userId, draftId, messageContext);
         await ctx.reply(`Draft ${draftId} approved and published.`);
         return;
       }
 
       if (action === 'rewrite') {
-        await this.moderationModule.rewriteDraft(actorId, draftId);
+        await this.moderationModule.rewriteDraft(actor.userId, draftId, messageContext);
         await ctx.reply(`Draft ${draftId} rewritten and re-sent for moderation.`);
         return;
       }
 
-      await this.moderationModule.requestRewriteNotes(actorId, draftId);
+      await this.moderationModule.requestRewriteNotes(actor.userId, draftId, messageContext);
       await ctx.reply('Send rewrite notes in your next message.');
     } catch (error: unknown) {
-      await ctx.reply(`Moderation action failed: ${toErrorMessage(error)}`);
+      console.error('Authorized moderation callback failed', {
+        action,
+        draftId,
+        actorId: actor.userId,
+        error
+      });
+      await safeReply(ctx, 'Moderation action failed. Details were written to the application log.');
+    } finally {
+      acquired.lease.release();
     }
   }
 
   private async handleTextMessage(ctx: Context): Promise<void> {
-    try {
-      const userId = String(ctx.from?.id ?? '');
-      if (!userId) {
-        return;
-      }
+    const actor = this.readAuthorizedActor(ctx);
+    if (!actor) {
+      return;
+    }
 
+    let lease: ActorOperationLease | null = null;
+    try {
       const message = (ctx.message ?? {}) as { text?: unknown };
       const text = typeof message.text === 'string' ? message.text.trim() : '';
       if (text.length === 0) {
@@ -208,42 +327,73 @@ export class TelegramService implements TelegramModule {
       }
 
       if (text.toLowerCase() === CANCEL_TEXT) {
-        await this.sessionsModule.clearSession(userId);
+        const acquired = this.acquireActorOperation(actor.userId);
+        if (!acquired.ok) {
+          await safeReply(ctx, actorGuardMessage(acquired.reason));
+          return;
+        }
+        lease = acquired.lease;
+        await this.sessionsModule.clearSession(actor.userId);
         await ctx.reply('Canceled.');
         return;
       }
 
-      const session = await this.sessionsModule.getSession(userId);
+      const session = await this.sessionsModule.getSession(actor.userId);
+      if (session.mode === 'IDLE') {
+        return;
+      }
+
+      const acquired = this.acquireActorOperation(actor.userId);
+      if (!acquired.ok) {
+        await safeReply(ctx, actorGuardMessage(acquired.reason));
+        return;
+      }
+      lease = acquired.lease;
+
       if (!this.moderationModule) {
         throw new Error('Moderation module is not bound.');
       }
 
       if (session.mode === 'WAITING_ARTICLE') {
-        const draftId = await this.moderationModule.processManualUploadArticle(userId, text);
+        const draftId = await this.moderationModule.processManualUploadArticle(actor.userId, text);
         await ctx.reply(`Article accepted. Draft ${draftId} sent to moderation.`);
         return;
       }
 
       if (session.mode === 'WAITING_NOTES') {
-        await this.moderationModule.submitRewriteNotes(userId, text);
+        await this.moderationModule.submitRewriteNotes(actor.userId, text);
         await ctx.reply('Notes accepted. Draft rewritten and re-sent for moderation.');
       }
     } catch (error: unknown) {
-      await safeReply(ctx, `Failed to process message: ${toErrorMessage(error)}`);
+      console.error('Authorized Telegram text processing failed', {
+        actorId: actor.userId,
+        error
+      });
+      await safeReply(ctx, 'Failed to process message. Details were written to the application log.');
+    } finally {
+      lease?.release();
     }
   }
 
   private async handleDocumentMessage(ctx: Context): Promise<void> {
-    try {
-      const userId = String(ctx.from?.id ?? '');
-      if (!userId) {
-        return;
-      }
+    const actor = this.readAuthorizedActor(ctx);
+    if (!actor) {
+      return;
+    }
 
-      const session = await this.sessionsModule.getSession(userId);
+    let lease: ActorOperationLease | null = null;
+    try {
+      const session = await this.sessionsModule.getSession(actor.userId);
       if (session.mode !== 'WAITING_ARTICLE') {
         return;
       }
+
+      const acquired = this.acquireActorOperation(actor.userId);
+      if (!acquired.ok) {
+        await safeReply(ctx, actorGuardMessage(acquired.reason));
+        return;
+      }
+      lease = acquired.lease;
 
       if (!this.moderationModule) {
         throw new Error('Moderation module is not bound.');
@@ -280,10 +430,17 @@ export class TelegramService implements TelegramModule {
       const progressTimer = startPdfProgressUpdates(ctx);
       try {
         const buffer = await this.downloadPdfBuffer(fileId);
+        if (buffer.byteLength > MAX_PDF_BYTES) {
+          throw new UserFacingTelegramError('Фактический размер PDF превышает 25 МБ.');
+        }
         const PdfParse = await this.getPdfParseClass();
         const parser = new PdfParse({ data: buffer });
         let parsed: { text?: string };
         try {
+          const info = await parser.getInfo();
+          if (info.total > MAX_PDF_PAGES) {
+            throw new UserFacingTelegramError(`PDF содержит больше ${MAX_PDF_PAGES} страниц.`);
+          }
           parsed = await parser.getText();
         } finally {
           await parser.destroy();
@@ -293,14 +450,29 @@ export class TelegramService implements TelegramModule {
           await ctx.reply('PDF не содержит читаемого текста.');
           return;
         }
+        if (articleText.length > MAX_PDF_TEXT_CHARS) {
+          throw new UserFacingTelegramError(
+            `Извлечённый текст превышает лимит ${MAX_PDF_TEXT_CHARS.toLocaleString('ru-RU')} символов.`
+          );
+        }
 
-        const draftId = await this.moderationModule.processManualUploadArticle(userId, articleText);
+        const draftId = await this.moderationModule.processManualUploadArticle(actor.userId, articleText);
         await ctx.reply(`PDF принят. Черновик ${draftId} отправлен на модерацию.`);
       } finally {
         clearInterval(progressTimer);
       }
     } catch (error: unknown) {
-      await safeReply(ctx, `Failed to process PDF: ${toErrorMessage(error)}`);
+      if (error instanceof UserFacingTelegramError) {
+        await safeReply(ctx, error.message);
+      } else {
+        console.error('Authorized Telegram PDF processing failed', {
+          actorId: actor.userId,
+          error
+        });
+        await safeReply(ctx, 'Failed to process PDF. Details were written to the application log.');
+      }
+    } finally {
+      lease?.release();
     }
   }
 
@@ -323,7 +495,12 @@ export class TelegramService implements TelegramModule {
     let lastError: unknown = null;
     for (const source of sources) {
       try {
-        return await fetchBufferWithRetry(source, TELEGRAM_FILE_FETCH_RETRIES, TELEGRAM_FILE_FETCH_TIMEOUT_MS);
+        return await fetchBufferWithRetry(
+          source,
+          TELEGRAM_FILE_FETCH_RETRIES,
+          TELEGRAM_FILE_FETCH_TIMEOUT_MS,
+          MAX_PDF_BYTES
+        );
       } catch (error: unknown) {
         lastError = error;
       }
@@ -332,22 +509,152 @@ export class TelegramService implements TelegramModule {
     throw new Error(`Failed to download PDF after retries: ${toErrorMessage(lastError)}`);
   }
 
-  private async buildReadyChannelPost(text: string): Promise<string> {
-    const normalized = text.trim();
-    if (normalized.length <= TELEGRAM_DIRECT_PUBLISH_LIMIT) {
-      return normalized;
+  private readAuthorizedActor(ctx: Context): { userId: string; chatId: string } | null {
+    const userId = String(ctx.from?.id ?? '');
+    const chatId = String(ctx.chat?.id ?? '');
+    if (!userId || !chatId) {
+      return null;
     }
 
-    const page = await createTelegraphPage(normalized, this.telegraphShortName, this.telegraphAccessToken);
-    return buildTelegraphAnnouncement(normalized, page.url);
+    if (!isAuthorizedTelegramModerator(this.moderatorAllowlist, userId, chatId)) {
+      return null;
+    }
+
+    return { userId, chatId };
+  }
+
+  private acquireActorOperation(actorId: string): ActorOperationAcquireResult {
+    if (this.activeActorOperations.has(actorId)) {
+      return { ok: false, reason: 'busy' };
+    }
+
+    const now = Date.now();
+    const lastStartedAt = this.lastActorOperationAt.get(actorId) ?? 0;
+    if (now - lastStartedAt < ACTOR_RATE_LIMIT_MS) {
+      return { ok: false, reason: 'rate_limited' };
+    }
+
+    this.activeActorOperations.add(actorId);
+    this.lastActorOperationAt.set(actorId, now);
+    let released = false;
+    return {
+      ok: true,
+      lease: {
+        release: () => {
+          if (released) {
+            return;
+          }
+          released = true;
+          this.activeActorOperations.delete(actorId);
+        }
+      }
+    };
+  }
+
+  private async buildReadyChannelPost(text: string): Promise<{
+    payload: string;
+    telegraphPath?: string;
+    telegraphUrl?: string;
+  }> {
+    const normalized = text.trim();
+    if (normalized.length <= TELEGRAM_DIRECT_PUBLISH_LIMIT) {
+      return { payload: normalized };
+    }
+
+    if (!this.telegraphAccessToken) {
+      throw new Error('TELEGRAPH_ACCESS_TOKEN is required to publish drafts longer than 2200 characters.');
+    }
+
+    const page = await createTelegraphPage(
+      normalized,
+      this.telegraphAccessToken,
+      this.telegraphRequestTimeoutMs
+    );
+    return {
+      payload: buildTelegraphAnnouncement(normalized, page.url),
+      telegraphPath: page.path,
+      telegraphUrl: page.url
+    };
   }
 }
 
-function parseModeratorChats(rawValue: string): string[] {
+function readCallbackMessageContext(
+  ctx: Context
+): { telegramChatId: string; telegramMessageId: string } | null {
+  const callback = ctx.callbackQuery as
+    | { message?: { chat?: { id?: unknown }; message_id?: unknown } }
+    | undefined;
+  const chatId = callback?.message?.chat?.id;
+  const messageId = callback?.message?.message_id;
+  if ((typeof chatId !== 'string' && typeof chatId !== 'number') || typeof messageId !== 'number') {
+    return null;
+  }
+  return {
+    telegramChatId: String(chatId),
+    telegramMessageId: String(messageId)
+  };
+}
+
+export function parseTelegramIdList(rawValue: string): string[] {
   return rawValue
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+}
+
+export function isAuthorizedTelegramModerator(
+  allowlist: TelegramModeratorAllowlist,
+  userId: string,
+  chatId: string
+): boolean {
+  if (!allowlist.userIds.has(userId)) {
+    return false;
+  }
+
+  return allowlist.chatIds.has(chatId) || chatId === userId;
+}
+
+export function splitTelegramText(text: string, maxChars: number = TELEGRAM_MAX_MESSAGE_CHARS): string[] {
+  const normalized = text.trim();
+  if (normalized.length <= maxChars) {
+    return normalized.length > 0 ? [normalized] : [];
+  }
+
+  const chunks: string[] = [];
+  let remaining = normalized;
+  while (remaining.length > maxChars) {
+    const candidate = remaining.slice(0, maxChars);
+    const paragraphBreak = candidate.lastIndexOf('\n\n');
+    const lineBreak = candidate.lastIndexOf('\n');
+    const whitespaceBreak = candidate.lastIndexOf(' ');
+    const splitAt = Math.max(
+      paragraphBreak >= Math.floor(maxChars * 0.5) ? paragraphBreak + 2 : 0,
+      lineBreak >= Math.floor(maxChars * 0.65) ? lineBreak + 1 : 0,
+      whitespaceBreak >= Math.floor(maxChars * 0.8) ? whitespaceBreak + 1 : 0
+    );
+    const boundary = splitAt > 0 ? splitAt : maxChars;
+    chunks.push(remaining.slice(0, boundary).trim());
+    remaining = remaining.slice(boundary).trimStart();
+  }
+
+  if (remaining.length > 0) {
+    chunks.push(remaining);
+  }
+  return chunks;
+}
+
+function actorGuardMessage(reason: 'busy' | 'rate_limited'): string {
+  return reason === 'busy'
+    ? 'Уже выполняется другая операция. Дождитесь её завершения.'
+    : 'Слишком частые запросы. Повторите через несколько секунд.';
+}
+
+class UserFacingTelegramError extends Error {}
+
+class PayloadTooLargeError extends UserFacingTelegramError {
+  public constructor(maxBytes: number) {
+    super(`Фактический размер PDF превышает ${Math.floor(maxBytes / 1024 / 1024)} МБ.`);
+  }
 }
 
 function toErrorMessage(error: unknown): string {
@@ -394,7 +701,12 @@ function startPdfProgressUpdates(ctx: Context): NodeJS.Timeout {
   }, PDF_PROGRESS_UPDATE_INTERVAL_MS);
 }
 
-async function fetchBufferWithRetry(url: string, attempts: number, timeoutMs: number): Promise<Buffer> {
+async function fetchBufferWithRetry(
+  url: string,
+  attempts: number,
+  timeoutMs: number,
+  maxBytes: number
+): Promise<Buffer> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const controller = new AbortController();
@@ -405,10 +717,41 @@ async function fetchBufferWithRetry(url: string, attempts: number, timeoutMs: nu
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const arrayBuffer = await response.arrayBuffer();
-      return Buffer.from(arrayBuffer);
+      const declaredLength = Number(response.headers.get('content-length') ?? '0');
+      if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+        throw new PayloadTooLargeError(maxBytes);
+      }
+
+      if (!response.body) {
+        const arrayBuffer = await response.arrayBuffer();
+        if (arrayBuffer.byteLength > maxBytes) {
+          throw new PayloadTooLargeError(maxBytes);
+        }
+        return Buffer.from(arrayBuffer);
+      }
+
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let receivedBytes = 0;
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          break;
+        }
+        receivedBytes += chunk.value.byteLength;
+        if (receivedBytes > maxBytes) {
+          await reader.cancel();
+          throw new PayloadTooLargeError(maxBytes);
+        }
+        chunks.push(chunk.value);
+      }
+
+      return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), receivedBytes);
     } catch (error: unknown) {
       lastError = error;
+      if (error instanceof PayloadTooLargeError) {
+        throw error;
+      }
       if (attempt < attempts) {
         await wait(300 * attempt);
       }
@@ -425,6 +768,7 @@ function wait(ms: number): Promise<void> {
 }
 
 interface PdfParseInstance {
+  getInfo(): Promise<{ total: number }>;
   getText(): Promise<{ text?: string }>;
   destroy(): Promise<void>;
 }
@@ -488,10 +832,9 @@ function unwrapPdfParseClass(value: unknown): unknown {
 
 async function createTelegraphPage(
   text: string,
-  shortName: string,
-  presetAccessToken: string | null
+  accessToken: string,
+  timeoutMs: number
 ): Promise<TelegraphPageResult> {
-  const accessToken = presetAccessToken ?? await createTelegraphAccount(shortName);
   const title = buildClickworthyTitle(text);
   const content = JSON.stringify([
     {
@@ -501,15 +844,19 @@ async function createTelegraphPage(
     ...toTelegraphParagraphNodes(text)
   ]);
 
-  const response = await fetch('https://api.telegra.ph/createPage', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      access_token: accessToken,
-      title,
-      content
-    })
-  });
+  const response = await fetchWithTimeout(
+    'https://api.telegra.ph/createPage',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        access_token: accessToken,
+        title,
+        content
+      })
+    },
+    timeoutMs
+  );
 
   const data = (await response.json()) as TelegraphResponse<TelegraphPageResult>;
   if (!response.ok || !data.ok || !data.result) {
@@ -519,27 +866,22 @@ async function createTelegraphPage(
   return data.result;
 }
 
-async function createTelegraphAccount(shortName: string): Promise<string> {
-  const response = await fetch('https://api.telegra.ph/createAccount', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      short_name: shortName,
-      author_name: 'Хвостатый гурман'
-    })
-  });
-
-  const data = (await response.json()) as TelegraphResponse<{ access_token: string }>;
-  if (!response.ok || !data.ok || !data.result?.access_token) {
-    throw new Error(`Failed to create Telegraph account: ${data.error ?? response.statusText}`);
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return data.result.access_token;
 }
 
 function toTelegraphParagraphNodes(text: string): Array<{ tag: 'p'; children: string[] }> {
   return text
-    .split(/\n{2,}/)
+    .split(/\n+/)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph.length > 0)
     .map((paragraph) => ({ tag: 'p' as const, children: [paragraph] }));
@@ -571,7 +913,7 @@ function isPdfNoiseLine(line: string): boolean {
   return /^https?:\/\//i.test(normalized);
 }
 
-function normalizePdfTextForAi(rawText: string): string {
+export function normalizePdfTextForAi(rawText: string): string {
   let text = rawText
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
@@ -596,7 +938,7 @@ function normalizePdfTextForAi(rawText: string): string {
   const seen = new Set<string>();
   for (const line of lines) {
     const normalized = normalizePdfLineKey(line);
-    if (normalized.length < 4 || seen.has(normalized)) {
+    if (normalized.length === 0 || seen.has(normalized)) {
       continue;
     }
     seen.add(normalized);
@@ -608,22 +950,9 @@ function normalizePdfTextForAi(rawText: string): string {
 }
 
 function trimPdfTailNoise(text: string): string {
-  const markers = [
-    'как приучить собаку к наморднику?',
-    'команды для собак: обучение и советы',
-    'похожие статьи'
-  ];
-
-  const normalized = text.toLowerCase();
-  let cutoff = text.length;
-  for (const marker of markers) {
-    const index = normalized.indexOf(marker);
-    if (index >= 0 && index < cutoff) {
-      cutoff = index;
-    }
-  }
-
-  return text.slice(0, cutoff);
+  const structuralMarker = /(?:^|\n)\s*(?:похожие статьи|related articles)\s*(?=\n|$)/im;
+  const markerMatch = structuralMarker.exec(text);
+  return markerMatch?.index === undefined ? text : text.slice(0, markerMatch.index);
 }
 
 function isPdfNormalizationNoiseLine(line: string): boolean {
@@ -637,10 +966,6 @@ function isPdfNormalizationNoiseLine(line: string): boolean {
   }
 
   if (/^(оглавление|contents|авторы)$/i.test(normalized)) {
-    return true;
-  }
-
-  if (/^\d+\s*(мин|m(in)?)(\s+\d+)?$/i.test(normalized)) {
     return true;
   }
 
@@ -673,9 +998,7 @@ function isPdfNormalizationNoiseLine(line: string): boolean {
     'статьи /',
     'дрессировка и спорт ркф',
     'contact',
-    '@royalcanin',
-    'авторы',
-    'введение'
+    '@royalcanin'
   ];
 
   if (noisePhrases.some((phrase) => normalized.includes(phrase))) {
@@ -772,9 +1095,11 @@ function looksLikePdfStatLine(line: string): boolean {
 
 function stripRuDateAndReadTimeMarkers(text: string): string {
   return text
-    .replace(/(^|\s)\d+\s*мин(?:ут[аы]?)?(?=\s|$)/gi, ' ')
-    .replace(/(^|\s)\d{1,2}\s*(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)(?:\s+\d{4})?(?=\s|$)/gi, ' ')
-    .replace(/(^|\s)(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{4}(?=\s|$)/gi, ' ');
+    .replace(/(?:время\s+чтения|reading\s+time)\s*:?\s*\d+\s*(?:мин(?:ут[аы]?)?|min(?:utes?)?)/gi, ' ')
+    .replace(
+      /(?:опубликовано|обновлено)\s*:?\s*\d{1,2}\s*(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)(?:\s+\d{4})?/gi,
+      ' '
+    );
 }
 
 function rebuildPdfParagraphs(lines: string[]): string[] {
